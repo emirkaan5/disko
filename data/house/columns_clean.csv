@@ -1,0 +1,227 @@
+column,group,description,usable?
+track_uid,summary,Unique id: <source>_<file stem>,y
+file_path,file,"Audio file, relative to data/house",y
+title,summary,Track title (source metadata),y
+artist,artist,Artist name (source metadata),y
+dj_bpm,summary,"One tempo for DJing: allin1's beat-derived BPM when both trackers agree; on a half/double disagreement, whichever lies in 100-140 BPM",y
+key,summary,Key from Essentia's KeyExtractor with the EDM-tuned 'edma' profile,y
+camelot,summary,"key on the Camelot wheel (8A = A minor); neighbours (+-1, same number A/B) mix harmonically",y
+source_genres,summary,Genres the uploader tagged,y
+has_vocals,summary,Vocals stem plays in at least 10% of bars,y
+intro_bars_before_bass,summary,Bars before the bass stem first plays (mix-in runway without two basslines),y
+intro_bars_before_vocals,summary,Bars before vocals first play,y
+outro_bars_after_vocals,summary,Bars after vocals last play,y
+ml_danceability,ml,Probability the track is danceable,y
+ml_valence,ml,"Valence, 1 (sad/negative) to 9 (happy/positive), emoMusic model",y
+ml_arousal,ml,"Arousal, 1 (calm) to 9 (energetic), emoMusic model",y
+source_genre_top,summary,FMA: top-level genre; Jamendo: first genre tag,y
+source_genres_all,summary,FMA: genres plus their parents,y
+source_tags,summary,Free-form tags at the source,y
+interest,summary,FMA interest score,y
+ess_lowlevel_barkbands_crest_mean,essentia,"barkbands band spectrum: crest, mean over frames",m
+ess_lowlevel_barkbands_crest_stdev,essentia,"barkbands band spectrum: crest, stdev over frames",m
+ess_lowlevel_barkbands_flatness_db_mean,essentia,"barkbands band spectrum: flatness db, mean over frames",m
+ess_lowlevel_barkbands_flatness_db_stdev,essentia,"barkbands band spectrum: flatness db, stdev over frames",m
+ess_lowlevel_barkbands_kurtosis_mean,essentia,"barkbands band spectrum: kurtosis, mean over frames",m
+ess_lowlevel_barkbands_kurtosis_stdev,essentia,"barkbands band spectrum: kurtosis, stdev over frames",m
+ess_lowlevel_barkbands_skewness_mean,essentia,"barkbands band spectrum: skewness, mean over frames",m
+ess_lowlevel_barkbands_skewness_stdev,essentia,"barkbands band spectrum: skewness, stdev over frames",m
+ess_lowlevel_barkbands_spread_mean,essentia,"barkbands band spectrum: spread, mean over frames",m
+ess_lowlevel_barkbands_spread_stdev,essentia,"barkbands band spectrum: spread, stdev over frames",m
+ess_lowlevel_dissonance_mean,essentia,"Sensory dissonance, mean over frames",m
+ess_lowlevel_dissonance_stdev,essentia,"Sensory dissonance, stdev over frames",m
+ess_lowlevel_erbbands_crest_mean,essentia,"erbbands band spectrum: crest, mean over frames",m
+ess_lowlevel_erbbands_crest_stdev,essentia,"erbbands band spectrum: crest, stdev over frames",m
+ess_lowlevel_erbbands_flatness_db_mean,essentia,"erbbands band spectrum: flatness db, mean over frames",m
+ess_lowlevel_erbbands_flatness_db_stdev,essentia,"erbbands band spectrum: flatness db, stdev over frames",m
+ess_lowlevel_erbbands_kurtosis_mean,essentia,"erbbands band spectrum: kurtosis, mean over frames",m
+ess_lowlevel_erbbands_kurtosis_stdev,essentia,"erbbands band spectrum: kurtosis, stdev over frames",m
+ess_lowlevel_erbbands_skewness_mean,essentia,"erbbands band spectrum: skewness, mean over frames",m
+ess_lowlevel_erbbands_skewness_stdev,essentia,"erbbands band spectrum: skewness, stdev over frames",m
+ess_lowlevel_erbbands_spread_mean,essentia,"erbbands band spectrum: spread, mean over frames",m
+ess_lowlevel_erbbands_spread_stdev,essentia,"erbbands band spectrum: spread, stdev over frames",m
+ess_lowlevel_hfc_mean,essentia,"High-frequency content, mean over frames",m
+ess_lowlevel_hfc_stdev,essentia,"High-frequency content, stdev over frames",m
+ess_lowlevel_loudness_ebu128_momentary_mean,essentia,"Momentary loudness (LUFS), mean over frames",m
+ess_lowlevel_loudness_ebu128_momentary_stdev,essentia,"Momentary loudness (LUFS), stdev over frames",m
+ess_lowlevel_loudness_ebu128_short_term_mean,essentia,"Short-term loudness (LUFS), mean over frames",m
+ess_lowlevel_loudness_ebu128_short_term_stdev,essentia,"Short-term loudness (LUFS), stdev over frames",m
+ess_lowlevel_melbands_crest_mean,essentia,"melbands band spectrum: crest, mean over frames",m
+ess_lowlevel_melbands_crest_stdev,essentia,"melbands band spectrum: crest, stdev over frames",m
+ess_lowlevel_melbands_flatness_db_mean,essentia,"melbands band spectrum: flatness db, mean over frames",m
+ess_lowlevel_melbands_flatness_db_stdev,essentia,"melbands band spectrum: flatness db, stdev over frames",m
+ess_lowlevel_melbands_kurtosis_mean,essentia,"melbands band spectrum: kurtosis, mean over frames",m
+ess_lowlevel_melbands_kurtosis_stdev,essentia,"melbands band spectrum: kurtosis, stdev over frames",m
+ess_lowlevel_melbands_skewness_mean,essentia,"melbands band spectrum: skewness, mean over frames",m
+ess_lowlevel_melbands_skewness_stdev,essentia,"melbands band spectrum: skewness, stdev over frames",m
+ess_lowlevel_melbands_spread_mean,essentia,"melbands band spectrum: spread, mean over frames",m
+ess_lowlevel_melbands_spread_stdev,essentia,"melbands band spectrum: spread, stdev over frames",m
+ess_lowlevel_mfcc_mean_1,essentia,"MFCC coefficient 1 (timbre), mean over frames",m
+ess_lowlevel_mfcc_mean_2,essentia,"MFCC coefficient 2 (timbre), mean over frames",m
+ess_lowlevel_mfcc_mean_3,essentia,"MFCC coefficient 3 (timbre), mean over frames",m
+ess_lowlevel_mfcc_mean_4,essentia,"MFCC coefficient 4 (timbre), mean over frames",m
+ess_lowlevel_mfcc_mean_5,essentia,"MFCC coefficient 5 (timbre), mean over frames",m
+ess_lowlevel_mfcc_mean_6,essentia,"MFCC coefficient 6 (timbre), mean over frames",m
+ess_lowlevel_mfcc_mean_7,essentia,"MFCC coefficient 7 (timbre), mean over frames",m
+ess_lowlevel_mfcc_mean_8,essentia,"MFCC coefficient 8 (timbre), mean over frames",m
+ess_lowlevel_mfcc_mean_9,essentia,"MFCC coefficient 9 (timbre), mean over frames",m
+ess_lowlevel_mfcc_mean_10,essentia,"MFCC coefficient 10 (timbre), mean over frames",m
+ess_lowlevel_mfcc_mean_11,essentia,"MFCC coefficient 11 (timbre), mean over frames",m
+ess_lowlevel_mfcc_mean_12,essentia,"MFCC coefficient 12 (timbre), mean over frames",m
+ess_lowlevel_mfcc_mean_13,essentia,"MFCC coefficient 13 (timbre), mean over frames",m
+ess_lowlevel_pitch_salience_mean,essentia,"Pitch salience (how pitched vs noisy), mean over frames",m
+ess_lowlevel_pitch_salience_stdev,essentia,"Pitch salience (how pitched vs noisy), stdev over frames",m
+ess_lowlevel_silence_rate_20dB_mean,essentia,"Share of frames below -20 dB, mean over frames",m
+ess_lowlevel_silence_rate_20dB_stdev,essentia,"Share of frames below -20 dB, stdev over frames",m
+ess_lowlevel_silence_rate_30dB_mean,essentia,"Share of frames below -30 dB, mean over frames",m
+ess_lowlevel_silence_rate_30dB_stdev,essentia,"Share of frames below -30 dB, stdev over frames",m
+ess_lowlevel_silence_rate_60dB_mean,essentia,"Share of frames below -60 dB, mean over frames",m
+ess_lowlevel_silence_rate_60dB_stdev,essentia,"Share of frames below -60 dB, stdev over frames",m
+ess_lowlevel_spectral_centroid_mean,essentia,"Spectral centroid, brightness (Hz), mean over frames",m
+ess_lowlevel_spectral_centroid_stdev,essentia,"Spectral centroid, brightness (Hz), stdev over frames",m
+ess_lowlevel_spectral_complexity_mean,essentia,"Number of spectral peaks, mean over frames",m
+ess_lowlevel_spectral_complexity_stdev,essentia,"Number of spectral peaks, stdev over frames",m
+ess_lowlevel_spectral_contrast_coeffs_mean_1,essentia,"Spectral contrast, band 1, mean over frames",m
+ess_lowlevel_spectral_contrast_coeffs_mean_2,essentia,"Spectral contrast, band 2, mean over frames",m
+ess_lowlevel_spectral_contrast_coeffs_mean_3,essentia,"Spectral contrast, band 3, mean over frames",m
+ess_lowlevel_spectral_contrast_coeffs_mean_4,essentia,"Spectral contrast, band 4, mean over frames",m
+ess_lowlevel_spectral_contrast_coeffs_mean_5,essentia,"Spectral contrast, band 5, mean over frames",m
+ess_lowlevel_spectral_contrast_coeffs_mean_6,essentia,"Spectral contrast, band 6, mean over frames",m
+ess_lowlevel_spectral_contrast_valleys_mean_1,essentia,"Spectral valleys, band 1, mean over frames",m
+ess_lowlevel_spectral_contrast_valleys_mean_2,essentia,"Spectral valleys, band 2, mean over frames",m
+ess_lowlevel_spectral_contrast_valleys_mean_3,essentia,"Spectral valleys, band 3, mean over frames",m
+ess_lowlevel_spectral_contrast_valleys_mean_4,essentia,"Spectral valleys, band 4, mean over frames",m
+ess_lowlevel_spectral_contrast_valleys_mean_5,essentia,"Spectral valleys, band 5, mean over frames",m
+ess_lowlevel_spectral_contrast_valleys_mean_6,essentia,"Spectral valleys, band 6, mean over frames",m
+ess_lowlevel_spectral_decrease_mean,essentia,"Spectral decrease, mean over frames",m
+ess_lowlevel_spectral_decrease_stdev,essentia,"Spectral decrease, stdev over frames",m
+ess_lowlevel_spectral_energy_mean,essentia,"Spectral energy, mean over frames",m
+ess_lowlevel_spectral_energy_stdev,essentia,"Spectral energy, stdev over frames",m
+ess_lowlevel_spectral_energyband_high_mean,essentia,"Energy 4-20 kHz, mean over frames",m
+ess_lowlevel_spectral_energyband_high_stdev,essentia,"Energy 4-20 kHz, stdev over frames",m
+ess_lowlevel_spectral_energyband_low_mean,essentia,"Energy 20-150 Hz, mean over frames",m
+ess_lowlevel_spectral_energyband_low_stdev,essentia,"Energy 20-150 Hz, stdev over frames",m
+ess_lowlevel_spectral_energyband_middle_high_mean,essentia,"Energy 800-4000 Hz, mean over frames",m
+ess_lowlevel_spectral_energyband_middle_high_stdev,essentia,"Energy 800-4000 Hz, stdev over frames",m
+ess_lowlevel_spectral_energyband_middle_low_mean,essentia,"Energy 150-800 Hz, mean over frames",m
+ess_lowlevel_spectral_energyband_middle_low_stdev,essentia,"Energy 150-800 Hz, stdev over frames",m
+ess_lowlevel_spectral_entropy_mean,essentia,"Spectral entropy (noisiness), mean over frames",m
+ess_lowlevel_spectral_entropy_stdev,essentia,"Spectral entropy (noisiness), stdev over frames",m
+ess_lowlevel_spectral_flux_mean,essentia,"Frame-to-frame spectral change, mean over frames",m
+ess_lowlevel_spectral_flux_stdev,essentia,"Frame-to-frame spectral change, stdev over frames",m
+ess_lowlevel_spectral_kurtosis_mean,essentia,"Spectral kurtosis, mean over frames",m
+ess_lowlevel_spectral_kurtosis_stdev,essentia,"Spectral kurtosis, stdev over frames",m
+ess_lowlevel_spectral_rms_mean,essentia,"Spectral RMS, mean over frames",m
+ess_lowlevel_spectral_rms_stdev,essentia,"Spectral RMS, stdev over frames",m
+ess_lowlevel_spectral_rolloff_mean,essentia,"Frequency below which 85% of energy lies (Hz), mean over frames",m
+ess_lowlevel_spectral_rolloff_stdev,essentia,"Frequency below which 85% of energy lies (Hz), stdev over frames",m
+ess_lowlevel_spectral_skewness_mean,essentia,"Spectral skewness, mean over frames",m
+ess_lowlevel_spectral_skewness_stdev,essentia,"Spectral skewness, stdev over frames",m
+ess_lowlevel_spectral_spread_mean,essentia,"Spectral spread, mean over frames",m
+ess_lowlevel_spectral_spread_stdev,essentia,"Spectral spread, stdev over frames",m
+ess_lowlevel_spectral_strongpeak_mean,essentia,"Strongest spectral peak ratio, mean over frames",m
+ess_lowlevel_spectral_strongpeak_stdev,essentia,"Strongest spectral peak ratio, stdev over frames",m
+ess_lowlevel_zerocrossingrate_mean,essentia,"Zero-crossing rate (noisiness/percussiveness), mean over frames",m
+ess_lowlevel_zerocrossingrate_stdev,essentia,"Zero-crossing rate (noisiness/percussiveness), stdev over frames",m
+ess_metadata_audio_properties_length,essentia,Length (s),m
+ess_rhythm_beats_count,essentia,Beats found,y
+ess_rhythm_beats_loudness_mean,essentia,"Energy at the beats, mean over frames",y
+ess_rhythm_beats_loudness_stdev,essentia,"Energy at the beats, stdev over frames",y
+ess_rhythm_beats_loudness_band_ratio_mean_1,essentia,"Share of beat energy in band 1 of 6 (1 = lowest), mean over frames",m
+ess_rhythm_beats_loudness_band_ratio_mean_2,essentia,"Share of beat energy in band 2 of 6 (1 = lowest), mean over frames",m
+ess_rhythm_beats_loudness_band_ratio_mean_3,essentia,"Share of beat energy in band 3 of 6 (1 = lowest), mean over frames",m
+ess_rhythm_beats_loudness_band_ratio_mean_4,essentia,"Share of beat energy in band 4 of 6 (1 = lowest), mean over frames",m
+ess_rhythm_beats_loudness_band_ratio_mean_5,essentia,"Share of beat energy in band 5 of 6 (1 = lowest), mean over frames",m
+ess_rhythm_beats_loudness_band_ratio_mean_6,essentia,"Share of beat energy in band 6 of 6 (1 = lowest), mean over frames",m
+ess_rhythm_bpm,essentia,"Tempo (BPM), RhythmExtractor2013",y
+ess_rhythm_bpm_histogram_first_peak_bpm,essentia,Strongest tempo candidate (BPM),y
+ess_rhythm_bpm_histogram_first_peak_weight,essentia,Its weight,y
+ess_rhythm_bpm_histogram_second_peak_bpm,essentia,Second tempo candidate (BPM),y
+ess_rhythm_bpm_histogram_second_peak_spread,essentia,Spread of the second peak,y
+ess_rhythm_bpm_histogram_second_peak_weight,essentia,Its weight,y
+ess_rhythm_danceability,essentia,"Essentia DFA danceability (about 0-3, higher = more danceable)",y
+ess_rhythm_onset_rate,essentia,Note onsets per second,y
+ess_tonal_chords_changes_rate,essentia,Chord changes per frame,y
+ess_tonal_chords_key,essentia,Key implied by the chords,y
+ess_tonal_chords_number_rate,essentia,Distinct chords / frames,y
+ess_tonal_chords_scale,essentia,Scale implied by the chords,y
+ess_tonal_key_edma_key,essentia,Key tonic (edma profile),y
+ess_tonal_key_edma_scale,essentia,major/minor (edma profile),y
+ess_tonal_key_edma_strength,essentia,Key confidence (edma profile),y
+ess_tonal_key_krumhansl_key,essentia,Key tonic (krumhansl profile),y
+ess_tonal_key_krumhansl_scale,essentia,major/minor (krumhansl profile),y
+ess_tonal_key_krumhansl_strength,essentia,Key confidence (krumhansl profile),y
+ess_tonal_key_temperley_key,essentia,Key tonic (temperley profile),y
+ess_tonal_key_temperley_scale,essentia,major/minor (temperley profile),y
+ess_tonal_key_temperley_strength,essentia,Key confidence (temperley profile),y
+ess_tonal_tuning_diatonic_strength,essentia,Fit to a diatonic scale,y
+ess_tonal_tuning_equal_tempered_deviation,essentia,Deviation from equal temperament,y
+ess_tonal_tuning_frequency,essentia,Tuning reference (Hz),y
+ess_tonal_tuning_nontempered_energy_ratio,essentia,Energy outside equal-tempered pitches,y
+a1_bpm,a1,allin1 tempo (integer BPM),y
+a1_beats,a1,Beats found by allin1,y
+a1_bars,a1,Bars (downbeats) found by allin1,y
+a1_first_beat_s,a1,Time of the first beat (s),y
+a1_first_downbeat_s,a1,Time of bar 1 (s),y
+a1_bpm_from_beats,a1,"60 / median beat interval (BPM, 2 decimals)",y
+a1_beat_interval_cv,a1,Beat-interval spread / mean; near 0 = machine-steady tempo,y
+a1_tempo_drift_pct,a1,Tempo change from the first to the last quarter of the track (%),y
+a1_beats_per_bar,a1,Most common beats per bar,y
+a1_bars_4beat_frac,a1,Share of full bars with exactly 4 beats,y
+a1_lead_silence_s,a1,Silence before the music starts (s),y
+a1_tail_silence_s,a1,Silence after it ends (s),y
+a1_n_segments,a1,Section count before merging repeats,y
+a1_sections,a1,"Sections with start-end times (s), repeats merged; allin1 uses pop-style labels",y
+a1_section_order,a1,"Section labels in order, repeats merged",y
+a1_intro_s,a1,Seconds allin1 labelled 'intro',y
+a1_verse_s,a1,Seconds allin1 labelled 'verse',y
+a1_chorus_s,a1,Seconds allin1 labelled 'chorus',y
+a1_bridge_s,a1,Seconds allin1 labelled 'bridge',y
+a1_inst_s,a1,Seconds allin1 labelled 'inst',y
+a1_solo_s,a1,Seconds allin1 labelled 'solo',y
+a1_break_s,a1,Seconds allin1 labelled 'break',y
+a1_outro_s,a1,Seconds allin1 labelled 'outro',y
+a1_intro_bars,a1,Bars in the opening intro section,y
+a1_outro_bars,a1,Bars in the closing outro section,y
+a1_first_chorus_s,a1,Start of the first 'chorus' (often the main drop in house) (s),y
+a1_first_chorus_bar,a1,Bar where the first 'chorus' starts,y
+a1_n_breaks,a1,Number of 'break' sections,y
+a1_boundaries_on_downbeat_frac,a1,Share of section changes within 0.15 s of a downbeat,y
+a1_boundaries_on_8bar_grid_frac,a1,Share of section changes on the 8-bar phrase grid counted from bar 1,y
+stem_drums_energy_share,stems,Drums stem (Demucs via allin1): share of total stem energy,y
+stem_drums_present_frac,stems,Drums stem (Demucs via allin1): share of bars where it plays,y
+stem_drums_first_bar,stems,Drums stem (Demucs via allin1): first bar it plays,y
+stem_drums_last_bar,stems,Drums stem (Demucs via allin1): last bar it plays,y
+stem_drums_first_s,stems,Drums stem (Demucs via allin1): time it first plays (s),y
+stem_drums_bars,stems,"Drums stem (Demucs via allin1): one digit per bar, 1 = playing",y
+stem_bass_energy_share,stems,Bass stem (Demucs via allin1): share of total stem energy,y
+stem_bass_present_frac,stems,Bass stem (Demucs via allin1): share of bars where it plays,y
+stem_bass_first_bar,stems,Bass stem (Demucs via allin1): first bar it plays,y
+stem_bass_last_bar,stems,Bass stem (Demucs via allin1): last bar it plays,y
+stem_bass_first_s,stems,Bass stem (Demucs via allin1): time it first plays (s),y
+stem_bass_bars,stems,"Bass stem (Demucs via allin1): one digit per bar, 1 = playing",y
+stem_vocals_energy_share,stems,Vocals stem (Demucs via allin1): share of total stem energy,y
+stem_vocals_present_frac,stems,Vocals stem (Demucs via allin1): share of bars where it plays,y
+stem_vocals_first_bar,stems,Vocals stem (Demucs via allin1): first bar it plays,y
+stem_vocals_last_bar,stems,Vocals stem (Demucs via allin1): last bar it plays,y
+stem_vocals_first_s,stems,Vocals stem (Demucs via allin1): time it first plays (s),y
+stem_vocals_bars,stems,"Vocals stem (Demucs via allin1): one digit per bar, 1 = playing",y
+stem_other_energy_share,stems,Other stem (Demucs via allin1): share of total stem energy,y
+stem_other_present_frac,stems,Other stem (Demucs via allin1): share of bars where it plays,y
+stem_other_first_bar,stems,Other stem (Demucs via allin1): first bar it plays,y
+stem_other_last_bar,stems,Other stem (Demucs via allin1): last bar it plays,y
+stem_other_first_s,stems,Other stem (Demucs via allin1): time it first plays (s),y
+stem_other_bars,stems,"Other stem (Demucs via allin1): one digit per bar, 1 = playing",y
+echonest_acousticness,echonest,"Echo Nest (Spotify's predecessor) acousticness, FMA subset only, 0-1 except tempo",y
+echonest_danceability,echonest,"Echo Nest (Spotify's predecessor) danceability, FMA subset only, 0-1 except tempo",y
+echonest_energy,echonest,"Echo Nest (Spotify's predecessor) energy, FMA subset only, 0-1 except tempo",y
+echonest_instrumentalness,echonest,"Echo Nest (Spotify's predecessor) instrumentalness, FMA subset only, 0-1 except tempo",y
+echonest_liveness,echonest,"Echo Nest (Spotify's predecessor) liveness, FMA subset only, 0-1 except tempo",y
+echonest_speechiness,echonest,"Echo Nest (Spotify's predecessor) speechiness, FMA subset only, 0-1 except tempo",y
+echonest_tempo,echonest,"Echo Nest (Spotify's predecessor) tempo, FMA subset only, 0-1 except tempo",y
+echonest_valence,echonest,"Echo Nest (Spotify's predecessor) valence, FMA subset only, 0-1 except tempo",y
+echonest_artist_discovery,echonest,"Echo Nest (Spotify's predecessor) artist discovery, FMA subset only, 0-1 except tempo",y
+echonest_artist_familiarity,echonest,"Echo Nest (Spotify's predecessor) artist familiarity, FMA subset only, 0-1 except tempo",y
+echonest_artist_hotttnesss,echonest,"Echo Nest (Spotify's predecessor) artist hotttnesss, FMA subset only, 0-1 except tempo",y
+echonest_song_currency,echonest,"Echo Nest (Spotify's predecessor) song currency, FMA subset only, 0-1 except tempo",y
+echonest_song_hotttnesss,echonest,"Echo Nest (Spotify's predecessor) song hotttnesss, FMA subset only, 0-1 except tempo",y

@@ -1,0 +1,318 @@
+{
+  "backend": "kev-kev-4b",
+  "state": "structured",
+  "dropped": {
+    "one_side_unannotated": 60155,
+    "implausible_overlap": 311,
+    "outside_window": 14
+  },
+  "ms_per_request": 3384.9518593754815,
+  "dev": {
+    "n": 10,
+    "scores": {
+      "random": {
+        "incoming_start": {
+          "accuracy": 0.14285714285714285,
+          "top2": 0.2857142857142857,
+          "within_one": 0.3571428571428571,
+          "log_loss": 1.9459101490553135
+        },
+        "outgoing_at_start": {
+          "accuracy": 0.15095238095238095,
+          "top2": 0.3019047619047619,
+          "within_one": 0.40428571428571425,
+          "log_loss": 1.8968478574104664
+        },
+        "outgoing_end": {
+          "accuracy": 0.15095238095238095,
+          "top2": 0.3019047619047619,
+          "within_one": 0.40428571428571425,
+          "log_loss": 1.8968478574104664
+        },
+        "incoming_at_end": {
+          "accuracy": 0.14285714285714285,
+          "top2": 0.2857142857142857,
+          "within_one": 0.39999999999999997,
+          "log_loss": 1.9459101490553135
+        },
+        "overlap": {
+          "accuracy": 0.2,
+          "top2": 0.4,
+          "within_one": 0.5,
+          "log_loss": 1.6094379124341003
+        }
+      },
+      "rule": {
+        "incoming_start": {
+          "accuracy": 0.5,
+          "top2": 0.9,
+          "within_one": 0.9,
+          "log_loss": 6.907755278982137,
+          "ece": 0.5
+        },
+        "outgoing_at_start": {
+          "accuracy": 0.1,
+          "top2": 0.2,
+          "within_one": 0.2,
+          "log_loss": 12.433959502167847,
+          "ece": 0.9
+        },
+        "outgoing_end": {
+          "accuracy": 0.2,
+          "top2": 0.3,
+          "within_one": 0.7,
+          "log_loss": 11.05240844637142,
+          "ece": 0.8
+        },
+        "incoming_at_end": {
+          "accuracy": 0.4,
+          "top2": 0.6,
+          "within_one": 1,
+          "log_loss": 8.289306334778564,
+          "ece": 0.6
+        },
+        "overlap": {
+          "accuracy": 0.3,
+          "top2": 0.3,
+          "within_one": 0.8,
+          "log_loss": 9.67085739057499,
+          "ece": 0.7
+        }
+      },
+      "prior": {
+        "incoming_start": {
+          "accuracy": 0.5,
+          "top2": 0.9,
+          "within_one": 0.9,
+          "log_loss": 1.1773261361962188,
+          "ece": 0.05100416824554754
+        },
+        "outgoing_at_start": {
+          "accuracy": 0.2,
+          "top2": 0.5,
+          "within_one": 0.5,
+          "log_loss": 1.9752089199565126,
+          "ece": 0.0899410761652141
+        },
+        "outgoing_end": {
+          "accuracy": 0.2,
+          "top2": 0.5,
+          "within_one": 0.5,
+          "log_loss": 1.888767029839781,
+          "ece": 0.09435089048882153
+        },
+        "incoming_at_end": {
+          "accuracy": 0.4,
+          "top2": 0.8,
+          "within_one": 1,
+          "log_loss": 1.3563419549823268,
+          "ece": 0.18330807123910572
+        },
+        "overlap": {
+          "accuracy": 0.5,
+          "top2": 0.6,
+          "within_one": 0.6,
+          "log_loss": 1.3796811925544537,
+          "ece": 0.09480056980056976
+        }
+      },
+      "kev-kev-4b": {
+        "incoming_start": {
+          "accuracy": 0.6,
+          "top2": 0.8,
+          "within_one": 1,
+          "log_loss": 1.5318139877057053,
+          "ece": 0.40569
+        },
+        "outgoing_at_start": {
+          "accuracy": 0,
+          "top2": 0.2,
+          "within_one": 0.5,
+          "log_loss": 1.9395904642596251,
+          "ece": 0.23831000000000002
+        },
+        "outgoing_end": {
+          "accuracy": 0.2,
+          "top2": 0.4,
+          "within_one": 0.5,
+          "log_loss": 1.8508450121327216,
+          "ece": 0.09818
+        },
+        "incoming_at_end": {
+          "accuracy": 0.3,
+          "top2": 0.5,
+          "within_one": 0.6,
+          "log_loss": 1.7769142517334906,
+          "ece": 0.10421000000000001
+        },
+        "overlap": {
+          "accuracy": 0.5,
+          "top2": 0.6,
+          "within_one": 0.6,
+          "log_loss": 1.5473939430008468,
+          "ece": 0.21960000000000005
+        }
+      }
+    },
+    "flip_rates": null,
+    "all_five_right": {
+      "rule": 0,
+      "prior": 0,
+      "kev-kev-4b": 0
+    }
+  },
+  "test": {
+    "n": 14,
+    "scores": {
+      "random": {
+        "incoming_start": {
+          "accuracy": 0.14285714285714285,
+          "top2": 0.2857142857142857,
+          "within_one": 0.3469387755102041,
+          "log_loss": 1.9459101490553135
+        },
+        "outgoing_at_start": {
+          "accuracy": 0.14285714285714285,
+          "top2": 0.2857142857142857,
+          "within_one": 0.42857142857142855,
+          "log_loss": 1.9459101490553135
+        },
+        "outgoing_end": {
+          "accuracy": 0.14285714285714285,
+          "top2": 0.2857142857142857,
+          "within_one": 0.4183673469387755,
+          "log_loss": 1.9459101490553135
+        },
+        "incoming_at_end": {
+          "accuracy": 0.14285714285714285,
+          "top2": 0.2857142857142857,
+          "within_one": 0.4183673469387755,
+          "log_loss": 1.9459101490553135
+        },
+        "overlap": {
+          "accuracy": 0.2,
+          "top2": 0.4,
+          "within_one": 0.5142857142857142,
+          "log_loss": 1.6094379124341003
+        }
+      },
+      "rule": {
+        "incoming_start": {
+          "accuracy": 0.5714285714285714,
+          "top2": 0.8571428571428571,
+          "within_one": 0.8571428571428571,
+          "log_loss": 5.920933096270403,
+          "ece": 0.4285714285714286
+        },
+        "outgoing_at_start": {
+          "accuracy": 0,
+          "top2": 0,
+          "within_one": 0.35714285714285715,
+          "log_loss": 13.815510557964274,
+          "ece": 1.0
+        },
+        "outgoing_end": {
+          "accuracy": 0.07142857142857142,
+          "top2": 0.07142857142857142,
+          "within_one": 0.35714285714285715,
+          "log_loss": 12.82868837525254,
+          "ece": 0.9285714285714286
+        },
+        "incoming_at_end": {
+          "accuracy": 0.5,
+          "top2": 0.5714285714285714,
+          "within_one": 0.8571428571428571,
+          "log_loss": 6.907755278982137,
+          "ece": 0.5
+        },
+        "overlap": {
+          "accuracy": 0.2857142857142857,
+          "top2": 0.2857142857142857,
+          "within_one": 0.5714285714285714,
+          "log_loss": 9.868221827117338,
+          "ece": 0.7142857142857143
+        }
+      },
+      "prior": {
+        "incoming_start": {
+          "accuracy": 0.5714285714285714,
+          "top2": 0.8571428571428571,
+          "within_one": 0.8571428571428571,
+          "log_loss": 1.2568060788669768,
+          "ece": 0.1547619047619047
+        },
+        "outgoing_at_start": {
+          "accuracy": 0.35714285714285715,
+          "top2": 0.7142857142857143,
+          "within_one": 0.7857142857142857,
+          "log_loss": 1.7667414786884428,
+          "ece": 0.08630952380952378
+        },
+        "outgoing_end": {
+          "accuracy": 0.2857142857142857,
+          "top2": 0.7142857142857143,
+          "within_one": 0.5,
+          "log_loss": 1.7250748847918187,
+          "ece": 0.1845238095238095
+        },
+        "incoming_at_end": {
+          "accuracy": 0.5,
+          "top2": 0.7857142857142857,
+          "within_one": 0.8571428571428571,
+          "log_loss": 1.5196985577655155,
+          "ece": 0.2767857142857143
+        },
+        "overlap": {
+          "accuracy": 0.42857142857142855,
+          "top2": 0.5,
+          "within_one": 0.8571428571428571,
+          "log_loss": 1.3446558211400288,
+          "ece": 0.01948051948051943
+        }
+      },
+      "kev-kev-4b": {
+        "incoming_start": {
+          "accuracy": 0.5714285714285714,
+          "top2": 0.7857142857142857,
+          "within_one": 0.8571428571428571,
+          "log_loss": 1.6152151805910464,
+          "ece": 0.3086928571428571
+        },
+        "outgoing_at_start": {
+          "accuracy": 0.07142857142857142,
+          "top2": 0.35714285714285715,
+          "within_one": 0.6428571428571429,
+          "log_loss": 1.8650068965946078,
+          "ece": 0.15317857142857141
+        },
+        "outgoing_end": {
+          "accuracy": 0.14285714285714285,
+          "top2": 0.2857142857142857,
+          "within_one": 0.6428571428571429,
+          "log_loss": 1.8962114982146416,
+          "ece": 0.07514285714285714
+        },
+        "incoming_at_end": {
+          "accuracy": 0.07142857142857142,
+          "top2": 0.35714285714285715,
+          "within_one": 0.5,
+          "log_loss": 1.8815854402007863,
+          "ece": 0.17954285714285712
+        },
+        "overlap": {
+          "accuracy": 0.42857142857142855,
+          "top2": 0.8571428571428571,
+          "within_one": 0.8571428571428571,
+          "log_loss": 1.2901776780743175,
+          "ece": 0.1289214285714286
+        }
+      }
+    },
+    "flip_rates": null,
+    "all_five_right": {
+      "rule": 0,
+      "prior": 0.07142857142857142,
+      "kev-kev-4b": 0
+    }
+  }
+}

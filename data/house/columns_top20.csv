@@ -1,0 +1,25 @@
+column,group,description
+track_uid,summary,Unique id: <source>_<file stem>
+file_path,file,"Audio file, relative to data/house"
+title,summary,Track title (source metadata)
+artist,artist,Artist name (source metadata)
+dj_bpm,summary,"One tempo for DJing: allin1's beat-derived BPM when both trackers agree; on a half/double disagreement, whichever lies in 100-140 BPM"
+camelot,summary,"key on the Camelot wheel (8A = A minor); neighbours (+-1, same number A/B) mix harmonically"
+ess_tonal_key_edma_strength,essentia,Key confidence (edma profile)
+intro_bars_before_bass,summary,Bars before the bass stem first plays (mix-in runway without two basslines)
+a1_outro_bars,a1,Bars in the closing outro section
+intro_bars_before_vocals,summary,Bars before vocals first play
+outro_bars_after_vocals,summary,Bars after vocals last play
+a1_sections,a1,"Sections with start-end times (s), repeats merged; allin1 uses pop-style labels"
+a1_first_chorus_bar,a1,Bar where the first 'chorus' starts
+stem_bass_bars,stems,"Bass stem (Demucs via allin1): one digit per bar, 1 = playing"
+stem_vocals_bars,stems,"Vocals stem (Demucs via allin1): one digit per bar, 1 = playing"
+ml_arousal,ml,"Arousal, 1 (calm) to 9 (energetic), emoMusic model"
+ml_valence,ml,"Valence, 1 (sad/negative) to 9 (happy/positive), emoMusic model"
+ml_danceability,ml,Probability the track is danceable
+ess_lowlevel_loudness_ebu128_short_term_mean,essentia,"Short-term loudness (LUFS), mean over frames"
+ess_rhythm_onset_rate,essentia,Note onsets per second
+ess_lowlevel_spectral_centroid_mean,essentia,"Spectral centroid, brightness (Hz), mean over frames"
+stem_vocals_present_frac,stems,Vocals stem (Demucs via allin1): share of bars where it plays
+stem_drums_energy_share,stems,Drums stem (Demucs via allin1): share of total stem energy
+source_genres,summary,Genres the uploader tagged

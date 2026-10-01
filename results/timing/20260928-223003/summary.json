@@ -1,0 +1,257 @@
+{
+  "transitions": 20,
+  "dropped": {
+    "one_side_unannotated": 60155,
+    "implausible_overlap": 311,
+    "outside_window": 14
+  },
+  "model": "router",
+  "routed": {
+    "english": 20
+  },
+  "ms_per_request": 200.80346665054094,
+  "scores": {
+    "random": {
+      "incoming_start": {
+        "accuracy": 0.14285714285714285,
+        "top2": 0.2857142857142857,
+        "within_one": 0.3571428571428571,
+        "log_loss": 1.9459101490553135
+      },
+      "outgoing_at_start": {
+        "accuracy": 0.1469047619047619,
+        "top2": 0.2938095238095238,
+        "within_one": 0.42357142857142854,
+        "log_loss": 1.92137900323289
+      },
+      "outgoing_end": {
+        "accuracy": 0.1469047619047619,
+        "top2": 0.2938095238095238,
+        "within_one": 0.42357142857142854,
+        "log_loss": 1.92137900323289
+      },
+      "incoming_at_end": {
+        "accuracy": 0.14285714285714285,
+        "top2": 0.2857142857142857,
+        "within_one": 0.40714285714285714,
+        "log_loss": 1.9459101490553135
+      },
+      "overlap": {
+        "accuracy": 0.2,
+        "top2": 0.4,
+        "within_one": 0.5,
+        "log_loss": 1.6094379124341003
+      }
+    },
+    "rule": {
+      "incoming_start": {
+        "accuracy": 0.5,
+        "top2": 0.85,
+        "within_one": 0.85,
+        "log_loss": 6.907755278982137,
+        "ece": 0.5
+      },
+      "outgoing_at_start": {
+        "accuracy": 0,
+        "top2": 0.05,
+        "within_one": 0.2,
+        "log_loss": 13.815510557964274,
+        "ece": 1.0
+      },
+      "outgoing_end": {
+        "accuracy": 0.05,
+        "top2": 0.1,
+        "within_one": 0.4,
+        "log_loss": 13.12473503006606,
+        "ece": 0.95
+      },
+      "incoming_at_end": {
+        "accuracy": 0.4,
+        "top2": 0.55,
+        "within_one": 0.95,
+        "log_loss": 8.289306334778564,
+        "ece": 0.6
+      },
+      "overlap": {
+        "accuracy": 0.3,
+        "top2": 0.3,
+        "within_one": 0.65,
+        "log_loss": 9.67085739057499,
+        "ece": 0.7
+      }
+    },
+    "prior": {
+      "incoming_start": {
+        "accuracy": 0.5,
+        "top2": 0.85,
+        "within_one": 0.85,
+        "log_loss": 1.328763377655262,
+        "ece": 0.16914085914085913
+      },
+      "outgoing_at_start": {
+        "accuracy": 0.25,
+        "top2": 0.5,
+        "within_one": 0.65,
+        "log_loss": 1.8532387074306933,
+        "ece": 0.0397212787212787
+      },
+      "outgoing_end": {
+        "accuracy": 0.15,
+        "top2": 0.65,
+        "within_one": 0.35,
+        "log_loss": 1.8103712976186581,
+        "ece": 0.16530902430902428
+      },
+      "incoming_at_end": {
+        "accuracy": 0.3,
+        "top2": 0.8,
+        "within_one": 0.95,
+        "log_loss": 1.4166878308788502,
+        "ece": 0.03285314685314683
+      },
+      "overlap": {
+        "accuracy": 0.5,
+        "top2": 0.6,
+        "within_one": 0.7,
+        "log_loss": 1.3687770471844487,
+        "ece": 0.07055682684973302
+      }
+    },
+    "laya": {
+      "incoming_start": {
+        "accuracy": 0.55,
+        "top2": 0.75,
+        "within_one": 0.85,
+        "log_loss": 1.486568549347534,
+        "ece": 0.24508000000000002
+      },
+      "outgoing_at_start": {
+        "accuracy": 0.05,
+        "top2": 0.25,
+        "within_one": 0.15,
+        "log_loss": 2.360416188847493,
+        "ece": 0.34579499999999996
+      },
+      "outgoing_end": {
+        "accuracy": 0.15,
+        "top2": 0.25,
+        "within_one": 0.35,
+        "log_loss": 2.335330548298552,
+        "ece": 0.22700499999999996
+      },
+      "incoming_at_end": {
+        "accuracy": 0.1,
+        "top2": 0.3,
+        "within_one": 0.5,
+        "log_loss": 1.9681824045831464,
+        "ece": 0.215545
+      },
+      "overlap": {
+        "accuracy": 0.2,
+        "top2": 0.25,
+        "within_one": 0.75,
+        "log_loss": 1.7045801200139923,
+        "ece": 0.08018499999999999
+      }
+    }
+  },
+  "flip_rates": {
+    "incoming_start": 0,
+    "outgoing_at_start": 0.6,
+    "outgoing_end": 0.3,
+    "incoming_at_end": 0.2,
+    "overlap": 0.4
+  },
+  "label_roles": {
+    "incoming_start": [
+      [
+        "0",
+        10
+      ],
+      [
+        "1",
+        7
+      ],
+      [
+        "2",
+        2
+      ],
+      [
+        "3",
+        1
+      ]
+    ],
+    "outgoing_at_start": [
+      [
+        "2",
+        7
+      ],
+      [
+        "3",
+        6
+      ],
+      [
+        "5",
+        3
+      ],
+      [
+        "0",
+        1
+      ]
+    ],
+    "outgoing_end": [
+      [
+        "1",
+        7
+      ],
+      [
+        "3",
+        6
+      ],
+      [
+        "2",
+        3
+      ],
+      [
+        "4",
+        2
+      ]
+    ],
+    "incoming_at_end": [
+      [
+        "2",
+        8
+      ],
+      [
+        "1",
+        8
+      ],
+      [
+        "0",
+        3
+      ],
+      [
+        "5",
+        1
+      ]
+    ],
+    "overlap": [
+      [
+        "very_long",
+        10
+      ],
+      [
+        "short",
+        5
+      ],
+      [
+        "long",
+        4
+      ],
+      [
+        "medium",
+        1
+      ]
+    ]
+  }
+}

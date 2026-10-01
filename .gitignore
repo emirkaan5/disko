@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv*/
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/
+
+# Secrets
+.env
+.env.*
+
+# Cloned third-party repos (Kev lives at external/kev, cloned from github.com/jaredpalmer/kev)
+external/
+
+# Data: audio, downloaded metadata, analysis outputs, model weights, Raveform dumps.
+# Only the small curated CSVs are tracked; everything else is regenerable via scripts/.
+data/**
+!data/*/
+!data/house/*.csv
+
+# Audio anywhere in the tree
+*.mp3
+*.wav
+*.flac
+*.ogg
+*.m4a
+*.aiff
+*.aif
+
+# Bench outputs: keep run summaries, drop bulky per-example predictions and logs
+results/**/predictions.jsonl
+*.log
+
+# Live app snapshots
+out.png
