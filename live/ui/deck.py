@@ -48,6 +48,10 @@ class DeckPanel(QFrame):
         head.addWidget(dot)
         head.addWidget(caps(deck_label, T.TEXT, 9))
         head.addStretch(1)
+        self.mapping = caps("", T.VIOLET, 8)
+        self.mapping.setToolTip("allin1 is finding this track's bars, sections and stems; until then the grid is a rough one")
+        head.addWidget(self.mapping)
+        head.addSpacing(10)
         self.status = caps("", accent, 9)
         head.addWidget(self.status)
         lay.addLayout(head)
@@ -113,6 +117,7 @@ class DeckPanel(QFrame):
     def set_deck(self, deck: Deck | None, image: WaveImage | None, note: str = ""):
         self.deck = deck
         self._shown = {}
+        self._mapping_note()
         self.wave.set_deck(deck, image)
         self.overview.set_deck(deck)
         if deck is None:
@@ -138,6 +143,16 @@ class DeckPanel(QFrame):
                "busyness": f"{t.busyness:.1f}/s", "brightness": f"{t.brightness / 1000:.1f}k", "vocals": f"{t.vocals:.0%}"}
         for key, m in self.meters.items():
             m.set(self.library.percentile(t, key), fmt[key])
+
+    def _mapping_note(self):
+        self.mapping.setText("mapping bars & sections…".upper() if self.deck and not self.deck.track.deep else "")
+
+    def refresh(self):
+        """The track's structure came in (or failed to): redraw the grid and sections."""
+        self._shown = {}
+        self._mapping_note()
+        self.wave.update()
+        self.overview.update()
 
     def set_status(self, text: str):
         self.status.setText(text.upper())

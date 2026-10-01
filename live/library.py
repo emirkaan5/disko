@@ -1,6 +1,13 @@
-"""The track library: tracks_top20.csv, each track's allin1 beat grid, and next-track ranking."""
+"""The track library: every track's features, its beat grid, and next-track ranking.
+
+Tracks come from a playlist folder (live/playlist.py) or from the house test set
+(data/house/tracks_top20.csv, analyzed in full in advance; `python -m live --house`). A playlist
+track starts out with the fast features only. Its structure (allin1's beats, bars and sections,
+where the bass and vocals play) is filled in when it is picked; until then its grid is Essentia's
+beats with a bar line every four.
+"""
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
 
@@ -38,30 +45,47 @@ class Track:
     bpm: float
     camelot: str
     key_strength: float
-    bass_in_bars: int      # bars before the bass first plays
-    outro_bars: int        # bars in allin1's closing outro section
-    vocals_in_bars: int    # bars before vocals first play
-    vocals_out_bars: int   # bars after vocals last play
-    sections: list
-    first_drop_bar: int    # bar of the first 'chorus' (usually the drop); 0 if none
-    bass_bars: str         # one digit per bar, 1 = bass playing
-    vocal_bars: str
     energy: float          # arousal, 1-9
     mood: float            # valence, 1-9
     danceability: float
     loudness: float        # LUFS
     busyness: float        # onsets per second
     brightness: float      # spectral centroid, Hz
-    vocals: float          # share of bars with vocals
-    drums: float           # drums' share of the stem energy
+    vocals: float          # share of bars with vocals; until the stems are in, guessed from the voice model
     genres: str
+    duration: float = 0.0
+    # Structure: known once allin1 has run on the track (deep=True).
+    deep: bool = False
+    bass_in_bars: int = 0      # bars before the bass first plays
+    outro_bars: int = 0        # bars in allin1's closing outro section
+    vocals_in_bars: int = 0    # bars before vocals first play
+    vocals_out_bars: int = 0   # bars after vocals last play
+    sections: list = field(default_factory=list)
+    first_drop_bar: int = 0    # bar of the first 'chorus' (usually the drop); 0 if none
+    bass_bars: str = ""        # one digit per bar, 1 = bass playing
+    vocal_bars: str = ""
+    drums: float | None = None  # drums' share of the stem energy
+    grid_file: Path | None = None  # allin1's JSON with the beats and downbeats
+    rough_beats: tuple = ()    # Essentia's beats: the grid until allin1's is in
 
     @cached_property
     def grid(self) -> tuple:
-        """(beats, downbeats) in native seconds, from allin1."""
-        source, stem = self.uid.split("_", 1)
-        d = json.loads((ROOT / "analysis" / "allin1" / source / f"{stem}.json").read_text())
-        return np.array(d["beats"], dtype=float), np.array(d["downbeats"], dtype=float)
+        """(beats, downbeats) in native seconds: allin1's, or until then Essentia's beats with a bar every 4."""
+        if self.grid_file is not None:
+            d = json.loads(Path(self.grid_file).read_text())
+            return np.array(d["beats"], dtype=float), np.array(d["downbeats"], dtype=float)
+        beats = np.array(self.rough_beats, dtype=float)
+        if len(beats) < 8:
+            beats = np.arange(0.0, max(self.duration, 8.0), 60.0 / self.bpm)
+        return beats, beats[::4]
+
+    def set_structure(self, **fields):
+        """allin1's results are in: fill in the structure and switch to its grid."""
+        for key, value in fields.items():
+            setattr(self, key, value)
+        self.deep = True
+        for key in ("grid", "beat_period"):
+            self.__dict__.pop(key, None)
 
     @property
     def beats(self):
@@ -103,11 +127,14 @@ def _int(v, default=0) -> int:
 
 
 def load_tracks(csv=ROOT / "tracks_top20.csv") -> list:
+    """The house test set, with every track's structure already analyzed."""
     df = pd.read_csv(csv)
     tracks = []
     for r in df.itertuples(index=False):
+        source, stem = r.track_uid.split("_", 1)
         tracks.append(Track(
-            uid=r.track_uid, path=ROOT / r.file_path,
+            uid=r.track_uid, path=ROOT / r.file_path, deep=True,
+            grid_file=ROOT / "analysis" / "allin1" / source / f"{stem}.json",
             title=r.title if isinstance(r.title, str) else "Untitled",
             artist=r.artist if isinstance(r.artist, str) else "Unknown artist",
             bpm=float(r.dj_bpm), camelot=r.camelot, key_strength=float(r.ess_tonal_key_edma_strength),
@@ -176,24 +203,27 @@ class Candidate:
 
 
 class Library:
-    FEATURES = ("energy", "mood", "danceability", "busyness", "brightness", "drums", "vocals")
+    FEATURES = ("energy", "mood", "danceability", "busyness", "brightness", "vocals", "drums")
 
-    def __init__(self, tracks=None):
-        self.tracks = tracks or load_tracks()
+    def __init__(self, tracks=None, name: str = "House test set"):
+        self.tracks = tracks if tracks is not None else load_tracks()
+        self.name = name
         self.by_uid = {t.uid: t for t in self.tracks}
-        raw = np.array([[getattr(t, f) for f in self.FEATURES] for t in self.tracks], dtype=float)
-        raw[:, 4] = np.log(raw[:, 4])  # brightness on a log scale
+        # The drums' share comes from the stems, so it only counts when every track has been through allin1.
+        self.features = tuple(f for f in self.FEATURES if f != "drums" or all(t.drums is not None for t in self.tracks))
+        raw = np.array([[getattr(t, f) for f in self.features] for t in self.tracks], dtype=float).reshape(-1, len(self.features))
+        raw[:, self.features.index("brightness")] = np.log(np.maximum(raw[:, self.features.index("brightness")], 1.0))
         self._raw = raw
         self._z = (raw - raw.mean(0)) / (raw.std(0) + 1e-9)
         self._index = {t.uid: i for i, t in enumerate(self.tracks)}
 
     def spread(self, feature: str) -> float:
         """The library's standard deviation for a feature."""
-        return float(self._raw[:, self.FEATURES.index(feature)].std())
+        return float(self._raw[:, self.features.index(feature)].std())
 
     def percentile(self, track: Track, feature: str) -> float:
         """Where the track sits in the library for a feature, 0-1."""
-        j = self.FEATURES.index(feature)
+        j = self.features.index(feature)
         col = self._raw[:, j]
         return float((col < self._raw[self._index[track.uid], j]).mean())
 
@@ -214,7 +244,7 @@ class Library:
             z = self._z[i]
             s_energy = float(np.exp(-((z[0] - zc[0] - 0.75 * lift) ** 2) / (2 * 0.8 ** 2)))
             s_vibe = float(np.exp(-np.mean((z[1:] - zc[1:]) ** 2) / 2))
-            s_runway = min(t.bass_in_bars / 16, 1.0)
+            s_runway = min(t.bass_in_bars / 16, 1.0) if t.deep else 0.5  # unknown until it is analyzed
             g1, g2 = set(current.genre_list), set(t.genre_list)
             s_genre = len(g1 & g2) / len(g1 | g2) if g1 | g2 else 0.0
             score = 0.30 * s_tempo + 0.22 * s_key + 0.18 * s_energy + 0.18 * s_vibe + 0.06 * s_runway + 0.06 * s_genre

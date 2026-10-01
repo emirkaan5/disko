@@ -32,6 +32,12 @@ class CandidateModel(QAbstractListModel):
 
 def _structure(p: QPainter, r: QRectF, t: Track):
     """Sections, then bass and vocal lanes, squeezed into a small strip."""
+    if not t.deep:
+        p.setFont(T.font(8))
+        p.setPen(T.qc(T.FAINT))
+        p.drawText(QRectF(r.left(), r.top() - 2, r.width(), 14), Qt.AlignmentFlag.AlignVCenter,
+                   "structure mapped when it plays")
+        return
     total = t.sections[-1].end if t.sections else 1
     p.setPen(Qt.PenStyle.NoPen)
     for s in t.sections:

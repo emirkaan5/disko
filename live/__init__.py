@@ -1,4 +1,4 @@
-"""disko live: a desktop DJ deck for the house test library (data/house).
+"""disko live: a desktop DJ deck where Kev, a small local decision model, DJs a folder of your music.
 
     .venv-live/bin/python -m live
 """

@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QMainWindow, QPushBu
 from ..audio import SR, Deck, load_deck, sync_ratio
 from ..dj import KevDJ
 from ..engine import Engine
+from ..indexer import DeepAnalyzer
 from ..kev import Kev
 from ..library import MAX_STRETCH, Library, Track, tempo_match
 from ..mixes import LANE_DEFAULTS, TECHNIQUES, Plan, Scheduled, build
@@ -42,7 +43,7 @@ def prepare_synced(track: Track, master_period: float) -> tuple:
 
 
 class TopBar(QFrame):
-    def __init__(self, on_play, on_volume):
+    def __init__(self, on_play, on_volume, playlist: str = ""):
         super().__init__()
         self.setObjectName("panel")
         self.setFixedHeight(66)
@@ -54,6 +55,14 @@ class TopBar(QFrame):
         lay.addWidget(logo)
         self.live = caps("live", T.MUTED, 8.5)
         lay.addWidget(self.live)
+        if playlist:
+            box = QVBoxLayout()
+            box.setSpacing(1)
+            box.addWidget(caps("Playlist"))
+            name = label(playlist, 12, QFont.Weight.DemiBold)
+            name.setMaximumWidth(220)
+            box.addWidget(name)
+            lay.addLayout(box)
         self.play = QPushButton("▶")
         self.play.setObjectName("round")
         self.play.setFixedSize(38, 38)
@@ -171,12 +180,14 @@ class Toast(QLabel):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, library: Library, engine: Engine, pool=None, kev: Kev | None = None):
+    def __init__(self, library: Library, engine: Engine, pool=None, kev: Kev | None = None,
+                 analyzer: DeepAnalyzer | None = None):
+        """analyzer maps tracks (allin1) as they come up; None when the library is mapped in full already."""
         super().__init__()
-        self.library, self.engine = library, engine
+        self.library, self.engine, self.analyzer = library, engine, analyzer
         self.pool = pool or ThreadPoolExecutor(max_workers=3)
         self.kev = kev or Kev()
-        self.dj = KevDJ(library, self.kev, prepare, prepare_synced)
+        self.dj = KevDJ(library, self.kev, prepare, prepare_synced, structure=self._structure)
         self.autopilot = True       # Kev DJs; off = you pick and plan every mix
         self.kev_ready = False
         self.b_view = None          # the deck B panel showing the queued/playing mix
@@ -198,7 +209,7 @@ class MainWindow(QMainWindow):
         v = QVBoxLayout(root)
         v.setContentsMargins(14, 14, 14, 14)
         v.setSpacing(12)
-        self.top = TopBar(self.toggle_play, self._volume)
+        self.top = TopBar(self.toggle_play, self._volume, f"{library.name} · {len(library.tracks)}")
         v.addWidget(self.top)
         body = QHBoxLayout()
         body.setSpacing(12)
@@ -307,17 +318,31 @@ class MainWindow(QMainWindow):
         if s is not None and self.state == "queued":
             self.engine.seek(max(int(s.start - 8 * s.spb), self.engine.snapshot().pos))
 
+    def _structure(self, track: Track) -> float:
+        """Block until allin1 has mapped the track (background threads only)."""
+        if track.deep or self.analyzer is None:
+            return 0.0
+        return self.analyzer.analyze(track).result()
+
     def _picked(self, track: Track):
         if self.current is None or self.state == "ended":
             self._token += 1
+            if self.analyzer is not None and not track.deep:  # map it while it plays; Kev's plan waits for it
+                self.analyzer.analyze(track)
             self.toast.show_message(f"Loading “{track.title}”…")
             self._submit(prepare, track, 1.0, then=self._opened)
             return
         if self.state not in ("playing", "planning"):
             return
+        a = self.current
+        if self.analyzer is not None and not (a.track.deep and track.deep):  # the planner needs both mapped
+            self._token += 1
+            self.browser.heading.setText(f"Mapping “{track.title}”: bars, sections and stems…")
+            self.toast.show_message(f"Mapping “{track.title}” before planning the mix, about 15 s…")
+            self._submit(lambda: (self._structure(a.track), self._structure(track)), then=lambda _: self._picked(track))
+            return
         self._token += 1
         self.b_native = self.b_synced = None
-        a = self.current
         self.planner.open(a, self.images[a.track.uid], track, self.engine.snapshot().pos)
         self.right.setCurrentWidget(self.planner)
         self.state = "planning"
@@ -410,9 +435,28 @@ class MainWindow(QMainWindow):
                 s = data["scheduled"]
                 self.images[s.deck.track.uid] = data["image"]
                 self._rendered(s)
+            elif kind == "exhausted":
+                self.toast.show_message("That's every track in the playlist — this one closes the set", "warn")
             elif kind == "error" and self.autopilot:
                 self.toast.show_message("Kev hit a problem — trying again", "bad")
                 QTimer.singleShot(3000, lambda: self.scheduled is None and self._kev_think())
+
+    def _drain_analyzer(self):
+        """allin1 finished a track: if it's playing, switch its deck to the real bars and sections."""
+        while self.analyzer is not None:
+            try:
+                kind, track, info = self.analyzer.events.get_nowait()
+            except queue.Empty:
+                return
+            playing = self.current is not None and self.current.track is track
+            if kind == "analyzed":
+                if playing:
+                    self.current.reset_grid()
+                    self.left.refresh()
+                self.browser.view.viewport().update()
+            elif kind == "failed" and playing:
+                self.toast.show_message(f"Couldn't map “{track.title}” — mixing by its rough beat grid", "warn")
+                self.left.refresh()
 
     def _back(self):
         self._token += 1
@@ -496,6 +540,7 @@ class MainWindow(QMainWindow):
     def tick(self):
         self._poll_jobs()
         self._drain_dj()
+        self._drain_analyzer()
         if not self.kev_ready and self.kev.info:
             self.kev_ready = True
             self.booth.handle("model", {"name": self.kev.name})
@@ -587,5 +632,7 @@ class MainWindow(QMainWindow):
         self.timer.stop()
         self.dj.cancel()
         self.engine.close()
+        if self.analyzer is not None:
+            self.analyzer.close()
         self.kev.stop()  # only if this app started the server
         super().closeEvent(e)

@@ -1,4 +1,6 @@
 """Decks: a track's audio decoded, gain-matched, time-stretched to the set tempo, plus its waveform."""
+import shutil
+import subprocess
 from dataclasses import dataclass
 from functools import cached_property, lru_cache
 
@@ -18,10 +20,22 @@ _LOW = butter(4, 200, "lowpass", fs=SR, output="sos")
 _HIGH = butter(4, 2500, "highpass", fs=SR, output="sos")
 
 
+def decode(path) -> tuple:
+    """(samples (n, channels) float32, sample rate). libsndfile reads MP3, WAV, FLAC, AIFF and Ogg;
+    anything else (AAC/M4A) goes through ffmpeg."""
+    try:
+        return sf.read(str(path), dtype="float32", always_2d=True)
+    except (RuntimeError, TypeError):
+        ffmpeg = shutil.which("ffmpeg") or "/opt/homebrew/bin/ffmpeg"
+        raw = subprocess.run([ffmpeg, "-v", "error", "-i", str(path), "-f", "f32le", "-ac", "2", "-ar", str(SR), "-"],
+                             capture_output=True, check=True).stdout
+        return np.frombuffer(raw, dtype=np.float32).reshape(-1, 2), SR
+
+
 @lru_cache(maxsize=3)
 def native_audio(track: Track) -> np.ndarray:
     """(n, 2) float32 at SR, gain-matched to TARGET_LUFS."""
-    x, sr = sf.read(str(track.path), dtype="float32", always_2d=True)
+    x, sr = decode(track.path)
     if x.shape[1] == 1:
         x = np.repeat(x, 2, axis=1)
     x = x[:, :2]
@@ -144,6 +158,11 @@ class Deck:
     @cached_property
     def sections(self) -> list:
         return [(s.label, s.start / self.ratio, s.end / self.ratio) for s in self.track.sections]
+
+    def reset_grid(self):
+        """The track's structure just came in from allin1: drop the grid worked out from the rough one."""
+        for key in ("beats", "downbeats", "sections"):
+            self.__dict__.pop(key, None)
 
     def bar_sample(self, bar: int) -> int:
         """Sample where 1-based `bar` starts."""

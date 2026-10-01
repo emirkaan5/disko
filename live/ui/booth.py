@@ -244,6 +244,7 @@ class Booth(QFrame):
         elif kind == "model":
             self.model.setText(data["name"].upper())
         elif kind == "shortlist":
+            self._started = time.time()  # the clock for "rated all 8 in …" (the opener may have been mapped first)
             self.candidates = data["candidates"]
             clear(self.list)
             self.rows = []
@@ -286,7 +287,10 @@ class Booth(QFrame):
                             f"<b>{data['in_probs'][inn[0]]:.0%}</b>")
             self._plan_line(f"<span style='color:{T.MUTED}'>Setting</span>&nbsp;&nbsp;{data['setting']}")
         elif kind == "log":
-            self.log(data["text"])
+            self.log(data["text"], data.get("tone", "info"))
+        elif kind == "exhausted":
+            self.set_status("Every track has been played", "warn")
+            self.log("No tracks left to pick — this one closes the set", "warn")
         elif kind == "error":
             self.set_status("Kev hit a problem", "bad")
             self.log(data["text"], "bad")

@@ -4,8 +4,12 @@ Code keeps every choice small and valid (eight shortlisted tracks, only the tech
 allow, only bars where the mix still fits) and describes tracks in words rather than numbers, which
 small decision models read far better (PLAN.md §3). Kev makes the calls. Each answer, with its
 probabilities, goes out as an event so the booth can show the decision as it happens.
+
+Tracks are shortlisted and rated on the fast features alone. Their structure (allin1's bars,
+sections and stems) is only worked out once Kev has picked one, since the mix plan needs it.
 """
 import queue
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 
@@ -104,6 +108,8 @@ class Cards:
 
     def at_bar(self, t: Track, bar: int) -> str:
         """What a track is doing at a bar: its section, bass and vocals."""
+        if not t.deep:
+            return "music"
         when = t.downbeats[min(max(bar, 1), t.n_bars) - 1]
         section = next((s.label for s in t.sections if s.start <= when < s.end), "")
         on = lambda bits: bar <= len(bits) and bits[bar - 1] == "1"
@@ -111,6 +117,8 @@ class Cards:
                 f"{'vocals' if on(t.vocal_bars) else 'no vocals'}")
 
     def ending(self, t: Track) -> str:
+        if not t.deep:
+            return "how it ends is not known"
         parts = [f"an outro of {bars_words(t.outro_bars)}"] if t.outro_bars else ["no real outro"]
         if t.vocals < 0.05:
             parts.append("no vocals")
@@ -122,6 +130,8 @@ class Cards:
         return "it ends with " + ", ".join(parts)
 
     def opening(self, t: Track) -> str:
+        if not t.deep:
+            return "how it opens is not known"
         parts = [f"{bars_words(t.bass_in_bars)} before its bass comes in"]
         parts.append("no vocals" if t.vocals < 0.05 else
                      "vocals from the start" if t.vocals_in_bars < 4 else f"vocals after {bars_words(t.vocals_in_bars)}")
@@ -149,10 +159,18 @@ class Candidate:
     ms: float = 0.0
 
 
+class NothingLeft(Exception):
+    """Every track in the library has been played."""
+
+
 class KevDJ:
-    def __init__(self, library: Library, kev: Kev, prepare, prepare_synced):
+    def __init__(self, library: Library, kev: Kev, prepare, prepare_synced, structure=None):
+        """structure(track) blocks until allin1 has mapped the track (raising if it can't); None
+        when every track is mapped already."""
         self.lib, self.kev, self.cards = library, kev, Cards(library)
         self.prepare, self.prepare_synced = prepare, prepare_synced
+        self.structure = structure or (lambda track: 0.0)
+        self.broken = set()  # uids allin1 couldn't map: not picked again
         self.events = queue.Queue()
         self.lift = 0
         self._token = 0
@@ -171,20 +189,47 @@ class KevDJ:
         emit = lambda kind, **data: token == self._token and self.events.put((kind, data))
         try:
             self._decide(token, emit, a, now, played, recent, minutes, avoid)
+        except NothingLeft:
+            emit("exhausted")
         except Exception as e:  # the set must go on: report it and let the window fall back
             emit("error", text=f"{type(e).__name__}: {e}")
 
+    def _map(self, emit, t: Track) -> bool:
+        """Have allin1 map a track's bars, sections and stems if it hasn't yet (10-25 s)."""
+        if t.deep:
+            return True
+        emit("status", text=f"Mapping “{t.title}”: bars, sections, stems…", tone="info")
+        start = time.time()
+        try:
+            self.structure(t)
+        except Exception as e:
+            emit("log", text=f"Couldn't map “{t.title}” ({e})", tone="warn")
+            return False
+        emit("mapped", track=t, seconds=time.time() - start)
+        emit("log", text=f"Mapped “{t.title}” in {time.time() - start:.0f} s: {t.n_bars} bars, "
+                         f"{len(t.sections)} sections")
+        return True
+
     def _decide(self, token, emit, a, now, played, recent, minutes, avoid):
+        if not a.track.deep:  # the opener: allin1 maps it while it plays; the plan needs its bars
+            self._map(emit, a.track)
+            a.reset_grid()
+        if token != self._token:
+            return
         if not self.kev.ping():
             emit("status", text="Waking Kev up (loading the model)…", tone="warn")
             self.kev.start()
         emit("model", name=self.kev.name)
 
         # 1. Shortlist in code, then Kev rates each candidate on its own (smaller states, no order bias).
-        recent_artists = {t.artist for t in recent[-2:]}
-        ranked = self.lib.rank(a.track, a.bpm, set(played) | avoid, self.lift)
-        short = [Candidate(c.track, self.cards.fit(a.bpm, a.track, c.track)) for c in ranked
-                 if c.track.artist not in recent_artists][:SHORTLIST]
+        # Two tracks in a row by one artist are skipped (unless that leaves nothing; untagged files
+        # all count as "Unknown artist", which isn't one).
+        recent_artists = {t.artist for t in recent[-2:] if t.artist != "Unknown artist"}
+        ranked = self.lib.rank(a.track, a.bpm, set(played) | avoid | self.broken, self.lift)
+        if not ranked:
+            raise NothingLeft
+        fresh = [c for c in ranked if c.track.artist not in recent_artists] or ranked
+        short = [Candidate(c.track, self.cards.fit(a.bpm, a.track, c.track)) for c in fresh[:SHORTLIST]]
         emit("shortlist", candidates=short)
         emit("status", text=f"Kev is weighing {len(short)} tracks…", tone="info")
         context = self.cards.set_line(minutes, self.lift, recent[:-1])
@@ -201,18 +246,31 @@ class KevDJ:
         weights = np.exp((scores - scores.max()) / TEMPERATURE)
         for c, p in zip(short, weights / weights.sum()):
             c.chance = float(p)
-        i = int(np.random.choice(len(short), p=[c.chance for c in short]))
-        pick = short[i]
-        b = pick.track
-        emit("picked", index=i)
-        emit("log", text=f"Picked “{b.title}” ({pick.chance:.0%} chance) — flow {pick.flow:.0%}, "
-                         f"energy fit {pick.energy:.0%}")
-
-        # Load the track (and time-stretch it to the set tempo) while Kev plans the mix.
-        dev = tempo_match(a.bpm, b.bpm)[1]
-        stretchable = dev <= MAX_STRETCH
-        native = self._io.submit(self.prepare, b, 1.0)
-        synced = self._io.submit(self.prepare_synced, b, a.period) if stretchable else None
+        left = list(range(len(short)))
+        while True:
+            p = np.array([short[j].chance for j in left]) + 1e-12
+            i = left[int(np.random.choice(len(left), p=p / p.sum()))]
+            pick = short[i]
+            b = pick.track
+            emit("picked", index=i)
+            emit("log", text=f"Picked “{b.title}” ({pick.chance:.0%} chance) — flow {pick.flow:.0%}, "
+                             f"energy fit {pick.energy:.0%}")
+            # Load the track (and time-stretch it to the set tempo) while allin1 maps it and Kev plans the mix.
+            dev = tempo_match(a.bpm, b.bpm)[1]
+            stretchable = dev <= MAX_STRETCH
+            native = self._io.submit(self.prepare, b, 1.0)
+            synced = self._io.submit(self.prepare_synced, b, a.period) if stretchable else None
+            if self._map(emit, b):
+                break
+            if len(short) - len(left) >= 2 or len(left) == 1:  # a third failure: allin1 itself is in trouble
+                emit("log", text=f"Mixing “{b.title}” on its rough beat grid instead", tone="warn")
+                break
+            self.broken.add(b.uid)  # allin1 couldn't read it: Kev's next choice
+            left.remove(i)
+            emit("log", text="Kev takes its next choice", tone="warn")
+        if token != self._token:
+            return
+        stretchable = stretchable and tempo_match(a.bpm, b.bpm)[1] <= MAX_STRETCH  # allin1 may have refined its tempo
 
         # 3. Technique, asked under four option orders, then its length.
         emit("status", text="Kev is planning the mix…", tone="info")
@@ -285,6 +343,7 @@ class KevDJ:
 
         # 5. Render it, ready to queue.
         deck, image = (synced if sync else native).result()
+        deck.reset_grid()  # it may have loaded before allin1's grid came in
         plan = Plan(technique, params, sync, out_bar, in_bar)
         scheduled = build(plan, a, deck)
         if scheduled.start < now() + SR:  # the chosen bar went by while deciding: take the next one that fits
