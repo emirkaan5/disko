@@ -7,7 +7,7 @@ from . import theme as T
 from .widgets import Knob, LevelMeter, Painted, VFader, caps, label
 
 KNOBS = (("high", "HI", True, False), ("mid", "MID", True, False), ("low", "LOW", True, False),
-         ("filter", "FILTER", False, True), ("echo", "ECHO", False, False))
+         ("filter", "FILTER", False, True), ("echo", "ECHO", False, False), ("reverb", "VERB", False, False))
 
 
 class XFader(Painted):

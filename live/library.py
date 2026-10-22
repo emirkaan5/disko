@@ -25,6 +25,30 @@ class Section:
     end: float
 
 
+def repair_downbeats(beats: np.ndarray, downbeats: np.ndarray, sections: list) -> np.ndarray:
+    """allin1 now and then puts its bar lines a beat or two off. Sections change on downbeats, so
+    when most of a track's section starts (at least four of them) sit on the same other beat of
+    allin1's bars, the bar lines move onto that beat."""
+    if len(beats) < 8 or len(downbeats) < 2:
+        return downbeats
+    dbi = np.searchsorted(beats, downbeats - 1e-3)
+    phases = []
+    for s in sections[1:]:
+        i = int(np.argmin(np.abs(beats - s.start)))
+        if abs(beats[i] - s.start) > 0.08:
+            continue
+        j = int(np.searchsorted(dbi, i, side="right")) - 1
+        if j >= 0:
+            phases.append(int(i - dbi[j]) % 4)
+    if len(phases) < 4:
+        return downbeats
+    k = int(np.bincount(phases, minlength=4).argmax())
+    if k == 0 or phases.count(k) < 0.75 * len(phases):
+        return downbeats
+    shifted = dbi + k
+    return beats[shifted[shifted < len(beats)]]
+
+
 def parse_sections(text) -> list:
     if not isinstance(text, str):
         return []
@@ -73,7 +97,8 @@ class Track:
         """(beats, downbeats) in native seconds: allin1's, or until then Essentia's beats with a bar every 4."""
         if self.grid_file is not None:
             d = json.loads(Path(self.grid_file).read_text())
-            return np.array(d["beats"], dtype=float), np.array(d["downbeats"], dtype=float)
+            beats, downbeats = np.array(d["beats"], dtype=float), np.array(d["downbeats"], dtype=float)
+            return beats, repair_downbeats(beats, downbeats, self.sections)
         beats = np.array(self.rough_beats, dtype=float)
         if len(beats) < 8:
             beats = np.arange(0.0, max(self.duration, 8.0), 60.0 / self.bpm)
@@ -84,8 +109,51 @@ class Track:
         for key, value in fields.items():
             setattr(self, key, value)
         self.deep = True
-        for key in ("grid", "beat_period"):
+        for key in ("grid", "beat_period", "phrase_grid"):
             self.__dict__.pop(key, None)
+
+    @cached_property
+    def phrase_grid(self) -> tuple:
+        """(phrase starts, half-phrase starts) as sorted 1-based bars.
+
+        Phrases start where allin1's sections do (snapped to the nearest downbeat) and every 8
+        bars after each until the next section; half-phrases add the bar 4 into each phrase. A
+        track without sections only gets 4-bar steps from its first downbeat."""
+        n, db = self.n_bars, self.downbeats
+        if not n:
+            return (), ()
+        if not self.sections:
+            return tuple(range(1, n + 1, 4)), tuple(range(1, n + 1, 4))
+        starts = sorted({int(np.argmin(np.abs(db - s.start))) + 1 for s in self.sections} | {1})
+        phrases = [bar for s, e in zip(starts, starts[1:] + [n + 1]) for bar in range(s, e, 8)]
+        halves = sorted(set(phrases) | {bar + 4 for bar, nxt in zip(phrases, phrases[1:] + [n + 1]) if bar + 4 < nxt})
+        return tuple(phrases), tuple(halves)
+
+    @property
+    def phrases(self) -> tuple:
+        return self.phrase_grid[0]
+
+    def phrase_after(self, bar: int, last: int) -> int | None:
+        """The first phrase start in [bar, last], else the first half-phrase, else None."""
+        for grid in self.phrase_grid:
+            hit = next((p for p in grid if bar <= p <= last), None)
+            if hit is not None:
+                return hit
+        return None
+
+    def phrase_before(self, bar: int, first: int) -> int | None:
+        """The last phrase start in [first, bar], else the last half-phrase, else None."""
+        for grid in self.phrase_grid:
+            hit = next((p for p in reversed(grid) if first <= p <= bar), None)
+            if hit is not None:
+                return hit
+        return None
+
+    def phrase_near(self, bar: int, first: int, last: int, reach: int = 2) -> int | None:
+        """The phrase start within `reach` bars of `bar` (a section edge counted from the CSV can be
+        a bar off allin1's), kept inside [first, last]."""
+        near = [p for p in self.phrases if abs(p - bar) <= reach and first <= p <= last]
+        return min(near, key=lambda p: abs(p - bar)) if near else None
 
     @property
     def beats(self):

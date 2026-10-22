@@ -35,6 +35,7 @@ data/**
 
 # Bench outputs: keep run summaries, drop bulky per-example predictions and logs
 results/**/predictions.jsonl
+results/live/
 *.log
 
 # Live app snapshots

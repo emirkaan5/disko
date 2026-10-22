@@ -332,6 +332,20 @@ class Glyph(Painted):
             p.drawRoundedRect(QRectF(m, m + 4, w / 2 - m - 2, h - 2 * m - 8), 2, 2)
             p.setBrush(b)
             p.drawRoundedRect(QRectF(w / 2 + 2, m, w / 2 - m - 2, h - 2 * m), 2, 2)
+        elif self.kind == "reverb_wash":  # A's bar dissolving into widening rings, then B
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(a)
+            p.drawRoundedRect(QRectF(m, m + 2, 3.2, h - 2 * m - 4), 1.5, 1.5)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            for i in range(3):
+                c = QColor(a)
+                c.setAlpha(200 - i * 60)
+                p.setPen(pen(c, 1.4))
+                r = (h - 2 * m) * (0.22 + i * 0.14)
+                p.drawArc(QRectF(m + 3 - r, h / 2 - r, 2 * r, 2 * r), -55 * 16, 110 * 16)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(b)
+            p.drawRoundedRect(QRectF(w - m - 4, m, 4, h - 2 * m), 1.5, 1.5)
         else:  # smooth_fade
             p.setPen(pen(a))
             path = QPainterPath(QPointF(m, m + 2))

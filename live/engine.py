@@ -25,7 +25,7 @@ class Snapshot:
 
     @property
     def b_pos(self) -> int | None:
-        return None if self.sched is None else self.sched.b_offset + self.tpos
+        return None if self.sched is None else self.sched.b_at(self.tpos)
 
 
 class Engine:
@@ -105,7 +105,7 @@ class Engine:
                 need = frames - filled
                 if self.in_mix:
                     s = self.pending
-                    self._log.append((self._clock + filled, self.deck, s.start + self.tpos, s, self.tpos))
+                    self._log.append((self._clock + filled, self.deck, s.a_at(self.tpos), s, self.tpos))
                     n = min(need, len(s.buffer) - self.tpos)
                     out[filled:filled + n] = s.buffer[self.tpos:self.tpos + n]
                     filled += n
@@ -149,9 +149,9 @@ class Engine:
             clock, deck, pos, sched, tpos = entry
             dt = max(0, heard - clock) if self.playing else 0
             if not self.playing:  # paused: show where playback stopped
-                return Snapshot(self.deck, self.pos if not self.in_mix else self.pending.start + self.tpos,
+                return Snapshot(self.deck, self.pos if not self.in_mix else self.pending.a_at(self.tpos),
                                 self.pending if self.in_mix else None, self.tpos, False, self.level)
             if sched is not None:
                 t = min(tpos + dt, len(sched.buffer) - 1)
-                return Snapshot(deck, sched.start + t, sched, t, True, self.level)
+                return Snapshot(deck, sched.a_at(t), sched, t, True, self.level)
             return Snapshot(deck, min(pos + dt, deck.length - 1), None, 0, True, self.level)

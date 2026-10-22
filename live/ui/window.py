@@ -17,6 +17,7 @@ from ..engine import Engine
 from ..indexer import DeepAnalyzer
 from ..kev import Kev
 from ..library import MAX_STRETCH, Library, Track, tempo_match
+from .. import mixes
 from ..mixes import LANE_DEFAULTS, TECHNIQUES, Plan, Scheduled, build
 from . import theme as T
 from .booth import Booth
@@ -27,7 +28,7 @@ from .planner import Planner
 from .waveform import WaveImage
 from .widgets import Segmented, caps, label
 
-LANES = ("fader", "low", "mid", "high", "filter", "echo")
+LANES = ("fader", "low", "mid", "high", "filter", "echo", "reverb")
 IDLE = {k: LANE_DEFAULTS[k] for k in LANES}
 SILENT = {**IDLE, "fader": 0.0}
 
@@ -150,7 +151,8 @@ class History(QFrame):
 
     def add_mix(self, plan: Plan):
         t = TECHNIQUES[plan.technique]
-        text = f"→ {t.name.lower()}" + (f" {plan.params['bars']}" if "bars" in plan.params else "") + " →"
+        text = (f"→ {t.name.lower()}" + (f" {plan.params['bars']}" if "bars" in plan.params else "")
+                + "".join(f" + {mixes.EFFECTS[k].name.lower()}" for k in plan.effects) + " →")
         lab = QLabel(text)
         lab.setFont(T.font(9, QFont.Weight.DemiBold))
         lab.setStyleSheet(f"color: {T.VIOLET};")
@@ -194,6 +196,7 @@ class MainWindow(QMainWindow):
         self.images = {}            # uid -> WaveImage
         self.current: Deck | None = None
         self.played = []
+        self.mixes = []  # the set's transitions so far, as Plans
         self.state = "start"        # start, playing, planning, queued, mixing, ended
         self.b_native = self.b_synced = None
         self.scheduled: Scheduled | None = None
@@ -391,7 +394,7 @@ class MainWindow(QMainWindow):
         self.booth.begin()
         recent = [self.library.by_uid[u] for u in self.played]
         self.dj.think(self.current, lambda: self.engine.snapshot().pos, self.played, recent,
-                      self.set_seconds / 60, avoid)
+                      self.set_seconds / 60, avoid, self.mixes)
 
     def _set_autopilot(self, on: bool):
         self.autopilot = on
@@ -492,12 +495,15 @@ class MainWindow(QMainWindow):
             return
         self.scheduled = s
         self.state = "queued"
+        mixes.log(s.report)
         self.b_view = self.kev_deck if self.autopilot else self.incoming
         self.b_view.set_deck(s.deck, self.images[s.deck.track.uid],
                              note=f"synced from {s.deck.bpm / s.deck.ratio:.1f}" if s.plan.sync and abs(s.deck.ratio - 1) > 5e-4 else "")
-        self.left.set_transition((s.start / SR, s.end / SR), [((s.start + b * s.spb) / SR, t) for b, t in s.auto.marks])
+        in_loop = lambda beat: any(at < beat <= until for deck, at, until, _ in s.auto.loops if deck == "A")
+        self.left.set_transition((s.start / SR, s.a_at(len(s.buffer)) / SR),  # a mark inside a loop has no one place on A
+                                 [(s.a_at(int(b * s.spb)) / SR, t) for b, t in s.auto.marks if not in_loop(b)])
         self.b_view.set_transition((s.b_offset / SR, s.b_after / SR),
-                                   [((s.b_offset + b * s.spb) / SR, t) for b, t in s.auto.marks],
+                                   [(s.b_at(int(b * s.spb)) / SR, t) for b, t in s.auto.marks],
                                    enters_at=(s.b_offset + s.auto.b_start * s.spb) / SR)
         self.right.setCurrentWidget(self.kev_page if self.autopilot else self.incoming)
         self.cancel.setVisible(not self.autopilot)
@@ -505,6 +511,7 @@ class MainWindow(QMainWindow):
         self.toast.show_message(f"{who} {s.plan.tech.name} for bar {s.plan.out_bar}")
         if self.autopilot:
             self.booth.log(f"Queued {s.plan.tech.name.lower()} for bar {s.plan.out_bar} of “{self.current.track.title}”")
+            self.booth.log(mixes.describe(s.report), "info" if s.report["out_on_phrase"] and s.report["in_on_phrase"] else "warn")
 
     def _cancel_mix(self):
         if self.scheduled is not None and self.engine.cancel():
@@ -522,6 +529,7 @@ class MainWindow(QMainWindow):
         self.cancel.hide()
         self.current = s.deck
         self.played.append(s.deck.track.uid)
+        self.mixes.append(s.plan)
         self.history.add_mix(s.plan)
         self.history.add_track(len(self.played), s.deck.track)
         self.left.set_deck(s.deck, self.images[s.deck.track.uid])
@@ -577,9 +585,11 @@ class MainWindow(QMainWindow):
             name = s.plan.tech.name
             if snap.sched is s:
                 beat = snap.tpos / s.spb
-                self.b_view.set_position(s.b_offset + snap.tpos)
+                self.b_view.set_position(s.b_at(snap.tpos))
                 a_vals = {k: s.auto.value("A", k, beat) for k in LANES}
                 b_vals = {k: s.auto.value("B", k, beat) for k in LANES}
+                for deck, vals in (("A", a_vals), ("B", b_vals)):  # a cut on the dry lane shows on the fader
+                    vals["fader"] *= s.auto.value(deck, "dry", beat)
                 if beat < s.auto.b_start:
                     b_vals["fader"] = 0.0
                 total = s.auto.beats / 4

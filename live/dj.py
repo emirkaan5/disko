@@ -18,11 +18,13 @@ import numpy as np
 from .audio import SR, Deck
 from .kev import Kev
 from .library import MAX_STRETCH, Library, Track, key_relation, tempo_match
-from .mixes import TECHNIQUES, Plan, build, mix_in_points, mix_window, recommend
+from .mixes import (EFFECTS, PREROLL, TECHNIQUES, Plan, build, effect_options, extension, mix_in_points, mix_window,
+                     recommend, stack)
 
 SHORTLIST = 8
 TEMPERATURE = 0.012  # sampling the pick: Kev's scores sit close together, so its top track should usually win
 UNSURE = 1.2        # Kev's technique yields to the rules only if its top pick is under 1.2x a coin flip
+EFFECTS_FROM = 5    # effects unlock from the mix into the 5th track of the set
 
 PICK_QUESTIONS = {
     "flow": {"type": "score", "instructions": "How naturally would the candidate follow the track now playing?",
@@ -37,11 +39,16 @@ TECHNIQUE_TEXT = {
     "echo_out": "echo out: the old track is thrown into an echo and the new one drops in on the beat; works across any tempo or key",
     "drop_cut": "hard cut on the downbeat straight into the new track; for a big jump in energy",
     "smooth_fade": "plain crossfade without EQ tricks; gentle, for breakdowns and calm tracks",
+    "reverb_wash": "reverb wash: the old track swells into a big reverb and the new one lands in its tail; works across "
+                   "any tempo or key, softer than an echo",
 }
+TAILED = ("echo_out", "reverb_wash")  # their length is the tail after the cut
 LENGTH_TEXT = {
     "blend": {"short": "a quick change, about 8 bars", "medium": "about 16 bars", "long": "a long blend, about 32 bars"},
     "echo_out": {"short": "a short echo tail of about 2 bars", "medium": "an echo tail of about 4 bars",
                  "long": "a long echo tail of about 8 bars"},
+    "reverb_wash": {"short": "a short reverb tail of about 2 bars", "medium": "a reverb tail of about 4 bars",
+                    "long": "a long reverb tail of about 8 bars"},
 }
 LENGTH_BARS = {"short": 8, "medium": 16, "long": 32}
 TAIL_BARS = {"short": 2, "medium": 4, "long": 8}
@@ -57,7 +64,13 @@ SETTING = {  # one extra knob per technique, asked together with the cue points
     "drop_cut": ("bass_kill", {"type": "noul",
                                "instructions": "Should the old track's bass drop out for the last two beats before the cut?"}),
     "smooth_fade": ("bass_swap", {"type": "noul", "instructions": "Should the basses swap halfway instead of overlapping?"}),
+    "reverb_wash": ("size", {"type": "choice", "instructions": "How big should the reverb be?",
+                             "criteria": {"room": "a tight room", "hall": "a big hall",
+                                          "cathedral": "an endless cathedral"}}),
 }
+RISER_END = {"type": "choice", "instructions": "If the outgoing track rises through a filter, how should the rise end?",
+             "criteria": {"cut": "the outgoing track cuts out at the top as the new track's bass lands",
+                          "release": "the filter drops back down and the outgoing track plays on a little longer"}}
 SECTION_WORDS = {"intro": "intro", "verse": "verse", "chorus": "main part", "bridge": "bridge",
                  "inst": "instrumental part", "solo": "lead part", "break": "breakdown", "outro": "outro"}
 KEY_WORDS = {"same key": "same key", "next door": "compatible neighbours", "relative key": "relative keys",
@@ -137,6 +150,19 @@ class Cards:
                      "vocals from the start" if t.vocals_in_bars < 4 else f"vocals after {bars_words(t.vocals_in_bars)}")
         return "it opens with " + ", ".join(parts)
 
+    @staticmethod
+    def mixes_line(mixes: list) -> str:
+        """The last few transitions, so Kev can vary them."""
+        if not mixes:
+            return "No mixes yet in this set."
+        said = []
+        for plan in mixes[-3:]:
+            text = TECHNIQUES[plan.technique].name.lower()
+            if plan.effects:
+                text += " with " + " and ".join(EFFECTS[k].name.lower() for k in plan.effects)
+            said.append(text)
+        return "Recent mixes, oldest first: " + "; ".join(said) + "."
+
     def set_line(self, minutes: float, lift: int, recent: list) -> str:
         phase = ("warming up" if minutes < 8 else "building" if minutes < 25 else
                  "at the peak" if minutes < 60 else "deep into the night")
@@ -177,18 +203,19 @@ class KevDJ:
         self._brain = ThreadPoolExecutor(max_workers=1, thread_name_prefix="kev-dj")
         self._io = ThreadPoolExecutor(max_workers=8, thread_name_prefix="kev-io")
 
-    def think(self, a: Deck, now, played: list, recent: list, minutes: float, avoid=()):
-        """Decide the next track and the mix into it, in the background. `now()` gives deck A's position."""
+    def think(self, a: Deck, now, played: list, recent: list, minutes: float, avoid=(), mixes=()):
+        """Decide the next track and the mix into it, in the background. `now()` gives deck A's
+        position; `mixes` are the set's transitions so far, as Plans."""
         self._token += 1
-        self._brain.submit(self._run, self._token, a, now, list(played), list(recent), minutes, set(avoid))
+        self._brain.submit(self._run, self._token, a, now, list(played), list(recent), minutes, set(avoid), list(mixes))
 
     def cancel(self):
         self._token += 1
 
-    def _run(self, token, a, now, played, recent, minutes, avoid):
+    def _run(self, token, a, now, played, recent, minutes, avoid, mixes):
         emit = lambda kind, **data: token == self._token and self.events.put((kind, data))
         try:
-            self._decide(token, emit, a, now, played, recent, minutes, avoid)
+            self._decide(token, emit, a, now, played, recent, minutes, avoid, mixes)
         except NothingLeft:
             emit("exhausted")
         except Exception as e:  # the set must go on: report it and let the window fall back
@@ -210,7 +237,7 @@ class KevDJ:
                          f"{len(t.sections)} sections")
         return True
 
-    def _decide(self, token, emit, a, now, played, recent, minutes, avoid):
+    def _decide(self, token, emit, a, now, played, recent, minutes, avoid, mixes):
         if not a.track.deep:  # the opener: allin1 maps it while it plays; the plan needs its bars
             self._map(emit, a.track)
             a.reset_grid()
@@ -277,7 +304,8 @@ class KevDJ:
         state = "\n".join([self.cards.set_line(minutes, self.lift, recent[:-1]),
                            f"Outgoing: {self.cards.vibe(a.track)}; {self.cards.ending(a.track)}.",
                            f"Incoming: {self.cards.vibe(b)}; {self.cards.opening(b)}.",
-                           f"Fit: {pick.fit}."])
+                           f"Fit: {pick.fit}.",
+                           self.cards.mixes_line(mixes)])
         options = {k: text for k, text in TECHNIQUE_TEXT.items() if stretchable or not TECHNIQUES[k].blend}
         probs, ms = self.kev.choose(state, "technique", {
             "type": "choice", "instructions": "How should the DJ move from the outgoing track into the incoming one?",
@@ -291,7 +319,7 @@ class KevDJ:
         emit("technique", probs=probs, choice=technique, overruled=overruled, ms=ms)
         tech = TECHNIQUES[technique]
         params = tech.defaults()
-        lengths = LENGTH_TEXT["echo_out"] if technique == "echo_out" else LENGTH_TEXT["blend"] if tech.blend else None
+        lengths = LENGTH_TEXT[technique] if technique in TAILED else LENGTH_TEXT["blend"] if tech.blend else None
         if lengths and tech.blend and key_relation(a.track.camelot, b.camelot)[0] < 0.5:
             lengths = {k: v for k, v in lengths.items() if k != "long"}  # clashing keys: no long overlap
         if lengths:
@@ -299,21 +327,23 @@ class KevDJ:
                 "type": "choice", "instructions": "How long should the transition take?", "criteria": lengths}})
             lp = answer["answers"]["length"]["probabilities"]
             length = max(lp, key=lp.get)
-            if technique == "echo_out":
+            if technique in TAILED:
                 params["tail"] = TAIL_BARS[length]
             else:
                 allowed = [v for _, v in next(p for p in tech.params if p.key == "bars").options]
                 params["bars"] = min(allowed, key=lambda v: abs(v - LENGTH_BARS[length]))
             emit("length", probs=lp, choice=length)
 
-        # 4. Where to mix out and in, plus one setting of the technique.
+        # 4. Where to mix out and in, one setting of the technique, and (from the 5th track on) the effects.
+        unlocked = len(played) + 1 >= EFFECTS_FROM
         sync = tech.blend or stretchable
         auto = tech.build(params, a.bpm)
-        first, last = mix_window(a, now(), technique, params, auto.b_start)
-        outs = self._out_options(a.track, first, last)
+        first, last = mix_window(a, now(), technique, params, auto.b_start + (PREROLL if unlocked else 0))
+        outs = self._out_options(a.track, first, last, params["bars"] if tech.blend else None)
         if not outs:  # too late in the track for this mix: echo out at the next bar instead
             technique, tech = "echo_out", TECHNIQUES["echo_out"]
             params, sync = tech.defaults(), stretchable
+            unlocked = False  # no room for an effect's build-up either
             auto = tech.build(params, a.bpm)
             outs = self._out_options(a.track, *mix_window(a, now(), technique, params, auto.b_start))
             emit("log", text="Too late in the track for that — echoing out at the next bar")
@@ -328,9 +358,21 @@ class KevDJ:
                                     for k, bar, label in ins}}}
         setting_key, setting_q = SETTING[technique]
         questions[setting_key] = setting_q
+        last_fx = set(mixes[-1].effects) if mixes else set()
+        fx_options = [k for k in effect_options(technique) if k not in last_fx] if unlocked else []
+        for k in fx_options:  # one yes/no each, so they can stack
+            questions[f"fx_{k}"] = {"type": "noul", "instructions": EFFECTS[k].kev}
+        if "riser" in fx_options and tech.blend:
+            questions["riser_end"] = RISER_END
         plan_line = f"\nPlan: {tech.name.lower()}" + (f" over {bars_words(params['bars'])}" if "bars" in params else "") + "."
         answers = self.kev.ask(state + plan_line, questions)["answers"]
         setting = self._apply_setting(technique, params, answers[setting_key])
+        fx_probs = {k: answers[f"fx_{k}"]["noul"] for k in fx_options}
+        effects = stack(technique, sorted((k for k, v in fx_probs.items() if v >= 0.5), key=lambda k: -fx_probs[k]))
+        riser_end = answers["riser_end"]["choice"] if "riser_end" in answers else "cut"
+        if unlocked:
+            emit("effects", probs=fx_probs, chosen=effects, riser_end=riser_end if "riser" in effects and tech.blend else None,
+                 skipped=sorted(last_fx & set(effect_options(technique))))
         auto = tech.build(params, a.bpm)
         out_key, in_key = answers["mix_out"]["choice"], answers["mix_in"]["choice"]
         out_bar = dict((k, bar) for k, bar, _ in outs)[out_key]
@@ -344,13 +386,13 @@ class KevDJ:
         # 5. Render it, ready to queue.
         deck, image = (synced if sync else native).result()
         deck.reset_grid()  # it may have loaded before allin1's grid came in
-        plan = Plan(technique, params, sync, out_bar, in_bar)
+        plan = Plan(technique, params, sync, out_bar, in_bar, effects=effects, riser_end=riser_end)
         scheduled = build(plan, a, deck)
         if scheduled.start < now() + SR:  # the chosen bar went by while deciding: take the next one that fits
-            first, last = mix_window(a, now(), technique, params, auto.b_start)
+            first, last = mix_window(a, now(), technique, params, scheduled.auto.b_start)
             if first > last:
                 raise RuntimeError("the chosen bar went by and nothing later fits")
-            plan.out_bar = first + (-(first - 1)) % 8 if first + (-(first - 1)) % 8 <= last else first
+            plan.out_bar = a.track.phrase_after(first, last) or first
             scheduled = build(plan, a, deck)
         emit("ready", scheduled=scheduled, image=image)
 
@@ -364,27 +406,34 @@ class KevDJ:
         c.score = 0.5 * c.flow + 0.3 * c.energy - 0.2 * c.repeat
         c.ms = reply.get("latency_ms", 0.0)
 
-    def _out_options(self, t: Track, first: int, last: int) -> list:
+    def _out_options(self, t: Track, first: int, last: int, blend_bars: int | None = None) -> list:
         """Bars in the back half of the track where the mix can land: phrase starts, the outro,
-        the end of the vocals, the latest bar that still fits."""
+        the end of the vocals, the latest bar that still fits. With a blend's length in `blend_bars`,
+        a bar where the outgoing track has to loop to fit says so."""
         if first > last:
             return []
         floor = max(first, int(t.n_bars * 0.55))
         if floor > last:
             floor = first
-        bars = {bar: "at a phrase start" for bar in range(1, last + 1, 8) if bar >= floor}
-        if t.outro_bars and floor <= t.n_bars - t.outro_bars + 1 <= last:
-            bars[t.n_bars - t.outro_bars + 1] = "where the outro starts"
-        if t.vocals > 0.05 and t.vocals_out_bars and floor <= t.n_bars - t.vocals_out_bars + 1 <= last:
-            bars[t.n_bars - t.vocals_out_bars + 1] = "right after the last vocals"
-        bars[last] = "as late as the mix still fits"
+        bars = {bar: "at a phrase start" for bar in t.phrases if floor <= bar <= last}
+        outro = t.phrase_near(t.n_bars - t.outro_bars + 1, floor, last) if t.outro_bars else None
+        if outro is not None:
+            bars[outro] = "where the outro starts"
+        if t.vocals > 0.05 and t.vocals_out_bars:
+            after = t.phrase_after(t.n_bars - t.vocals_out_bars + 1, last)
+            if after is not None and after >= floor:
+                bars[after] = "right after the last vocals"
+        bars.setdefault(t.phrase_before(last, floor) or last, "as late as the mix still fits")
         if len(bars) > 6:  # keep the special spots and the last few phrase starts
             special = {b: s for b, s in bars.items() if s != "at a phrase start"}
             phrases = sorted(b for b, s in bars.items() if s == "at a phrase start")
             for b in phrases[-(6 - len(special)):] if len(special) < 6 else []:
                 special[b] = bars[b]
             bars = special
-        return [(f"bar_{bar}", bar, f"{tag}: {self.cards.at_bar(t, bar)}") for bar, tag in sorted(bars.items())]
+        loops = lambda bar: blend_bars is not None and extension(t, bar, blend_bars) is not None
+        return [(f"bar_{bar}", bar, f"{tag}: {self.cards.at_bar(t, bar)}"
+                 + ("; the outgoing track loops its last phrase to make room" if loops(bar) else ""))
+                for bar, tag in sorted(bars.items())]
 
     @staticmethod
     def _apply_setting(technique: str, params: dict, answer: dict) -> str:
@@ -397,6 +446,9 @@ class KevDJ:
         if technique == "echo_out":
             params["time"] = {"half": 0.5, "beat": 1.0}[answer["choice"]]
             return f"{'half-beat' if answer['choice'] == 'half' else 'one-beat'} echo ({answer['probabilities'][answer['choice']]:.0%})"
+        if technique == "reverb_wash":
+            params["size"] = {"room": 0.6, "hall": 0.82, "cathedral": 0.94}[answer["choice"]]
+            return f"{answer['choice']} reverb ({answer['probabilities'][answer['choice']]:.0%})"
         yes = answer["noul"] >= 0.5
         if technique == "drop_cut":
             params["bass_kill"] = 2 if yes else 0

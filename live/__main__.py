@@ -54,6 +54,10 @@ def snapshot(win, engine, args):
         win.tick()
         if args.technique:
             win.planner._select(args.technique)
+        for key in filter(None, (args.effects or "").split(",")):
+            win.planner._effect(key, True)
+        if args.riser_end:
+            win.planner._riser_end(args.riser_end)
         win.tick()
     if kev:  # let Kev decide (real model calls), then optionally run into its mix
         deadline = time.time() + 240
@@ -151,6 +155,8 @@ def main():
     ap.add_argument("--track", default="jamendo_1011780", help="opening track, uid or part of its title (snapshot)")
     ap.add_argument("--next", help="incoming track (snapshot); default: the top-ranked one")
     ap.add_argument("--technique", help="technique to plan (snapshot)")
+    ap.add_argument("--effects", help="comma-separated effects to add in the planner (snapshot)")
+    ap.add_argument("--riser-end", choices=["cut", "release"], help="how a riser ends (snapshot)")
     ap.add_argument("--at", type=float, default=95.0, help="seconds into the opening track (snapshot)")
     ap.add_argument("--progress", type=float, default=0.5, help="how far into the transition, or the indexing (snapshot)")
     args = ap.parse_args()

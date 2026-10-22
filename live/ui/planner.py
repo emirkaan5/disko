@@ -1,4 +1,5 @@
-"""The mix planner: suggested technique, the five to choose from, their settings, timing and a preview."""
+"""The mix planner: suggested technique, the techniques to choose from, their settings, effects on top,
+timing and a preview."""
 import numpy as np
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QFont, QPainter, QPainterPath, QPen
@@ -7,8 +8,8 @@ from PySide6.QtWidgets import (QComboBox, QFrame, QGridLayout, QHBoxLayout, QLab
 
 from ..audio import SR, Deck
 from ..library import MAX_STRETCH, Track, tempo_match
-from ..mixes import (TECHNIQUES, Automation, Plan, default_in, default_out, layout, mix_in_points, mix_out_points,
-                     recommend)
+from ..mixes import (EFFECTS, MAX_EFFECTS, TECHNIQUES, Automation, Plan, default_in, default_out, effect_options, layout,
+                     mix_in_points, mix_out_points, recommend)
 from . import theme as T
 from .waveform import WaveImage
 from .widgets import Glyph, Segmented, caps, clear, label
@@ -101,13 +102,28 @@ class TransitionPreview(QWidget):
                 p.setPen(T.qc(T.MUTED))
                 p.drawText(QPointF(x(beat) + 3, r.top() + 15), f"{beat // 4:+d}" if beat else "bar 0")
 
-        # waveforms: deck A until the transition ends, deck B from where it enters
-        for deck, img, offset, lane, accent in ((a, a_img, start, lanes["A"], T.DECK_A),
-                                                 (b, b_img, b_offset, lanes["B"], T.DECK_B)):
+        # waveforms: deck A until the transition ends, deck B from where it enters, each piece of
+        # audio where its timeline plays it (a loop shows its repeats)
+        for key, deck, img, offset, lane, accent in (("A", a, a_img, start, lanes["A"], T.DECK_A),
+                                                     ("B", b, b_img, b_offset, lanes["B"], T.DECK_B)):
             if img is not None:
-                t0 = (offset + b0 * spb) / SR * deck.ratio
-                t1 = (offset + b1 * spb) / SR * deck.ratio
-                img.draw(p, lane, t0, t1)
+                cuts = [b0] + [beat for beat, _ in auto.timeline.get(key, []) if b0 < beat < b1] + [b1]
+                for lo, hi in zip(cuts, cuts[1:]):
+                    src = auto.source_beat(key, lo)
+                    t0 = (offset + src * spb) / SR * deck.ratio
+                    t1 = (offset + (src + hi - lo) * spb) / SR * deck.ratio
+                    img.draw(p, QRectF(x(lo), lane.top(), x(hi) - x(lo), lane.height()), t0, t1)
+            for deck_key, at, until, length in auto.loops:
+                if deck_key != key:
+                    continue
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(T.qc(T.WARN, 34))
+                p.drawRect(QRectF(x(at), lane.top(), x(until) - x(at), lane.height()))
+                p.setPen(QPen(T.qc(T.WARN, 150), 1))
+                beat = at + length
+                while beat < until - 1e-6:
+                    p.drawLine(QPointF(x(beat), lane.top() + 2), QPointF(x(beat), lane.top() + 8))
+                    beat += length
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(T.qc("#0b0e14", 185))
             if lane is lanes["A"]:
@@ -120,33 +136,45 @@ class TransitionPreview(QWidget):
                        "A" if lane is lanes["A"] else "B")
 
         # automation
-        def curve(deck, lane_name, color, width, style, bipolar=False):
-            if (deck, lane_name) not in auto.lanes:
+        def curve(deck, names, color, width, style, bipolar=False, top=1.0):
+            """A lane (or the product of several, e.g. fader x dry) drawn from 0 to `top` up its deck's lane."""
+            if not any((deck, n) in auto.lanes for n in names):
                 return
             lane = lanes[deck]
             path = QPainterPath()
-            for i, beat in enumerate(np.linspace(b0, b1, 160)):
-                v = auto.value(deck, lane_name, min(max(beat, 0), L))
-                y = lane.center().y() - v * lane.height() / 2 if bipolar else lane.bottom() - v * (lane.height() - 4) - 2
+            for i, beat in enumerate(np.linspace(b0, b1, 240)):
+                v = float(np.prod([auto.value(deck, n, min(max(beat, 0), L)) for n in names]))
+                y = (lane.center().y() - v * lane.height() / 2 if bipolar else
+                     lane.bottom() - min(v / top, 1.0) * (lane.height() - 4) - 2)
                 (path.moveTo if i == 0 else path.lineTo)(QPointF(x(beat), y))
             p.setPen(QPen(T.qc(color), width, style, Qt.PenCapStyle.RoundCap))
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawPath(path)
 
+        boosted = any(v > 1.0 for (_, name), pts in auto.lanes.items() if name == "high" for _, v in pts)
         for deck, accent in (("A", T.DECK_A), ("B", T.DECK_B)):
-            curve(deck, "low", T.BASS_LANE, 1.6, Qt.PenStyle.DashLine)
-            curve(deck, "filter", T.VIOLET, 1.6, Qt.PenStyle.SolidLine, bipolar=True)
-            curve(deck, "echo", T.GOOD, 1.6, Qt.PenStyle.DotLine)
-            curve(deck, "fader", accent, 2.4, Qt.PenStyle.SolidLine)
+            curve(deck, ["low"], T.BASS_LANE, 1.6, Qt.PenStyle.DashLine)
+            if boosted:  # treble on a 0-2 scale: halfway up is 0 dB
+                curve(deck, ["high"], T.WAVE_HIGH, 1.3, Qt.PenStyle.DashDotLine, top=2.0)
+            curve(deck, ["filter"], T.VIOLET, 1.6, Qt.PenStyle.SolidLine, bipolar=True)
+            curve(deck, ["echo"], T.GOOD, 1.6, Qt.PenStyle.DotLine)
+            curve(deck, ["reverb"], T.VOCAL_LANE, 1.6, Qt.PenStyle.DotLine)
+            curve(deck, ["fader", "dry"], accent, 2.4, Qt.PenStyle.SolidLine)
 
         # marks (bass swap, cut) as pills on their line, between the lanes
         p.setFont(T.font(7.5, QFont.Weight.DemiBold, spacing=0.9))
         mid_y = lanes["A"].bottom() + 5
-        for beat, text in auto.marks:
+        placed = []  # a pill that would cover another moves to the top, then the bottom, of the lanes
+        for beat, text in sorted(auto.marks):
             p.setPen(QPen(T.qc(T.TEXT, 200), 1.2, Qt.PenStyle.DashLine))
             p.drawLine(QPointF(x(beat), inner.top()), QPointF(x(beat), inner.bottom()))
             w = p.fontMetrics().horizontalAdvance(text.upper()) + 12
-            pill = QRectF(min(x(beat) - w / 2, inner.right() - w), mid_y - 8, w, 16)
+            left = min(x(beat) - w / 2, inner.right() - w)
+            for y in (mid_y - 8, inner.top() + 2, inner.bottom() - 18):
+                pill = QRectF(left, y, w, 16)
+                if not any(pill.adjusted(-3, 0, 3, 0).intersects(q) for q in placed):
+                    break
+            placed.append(pill)
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(T.qc(T.TEXT))
             p.drawRoundedRect(pill, 8, 8)
@@ -154,8 +182,11 @@ class TransitionPreview(QWidget):
             p.drawText(pill, Qt.AlignmentFlag.AlignCenter, text.upper())
 
         # legend along the bottom
-        items = [("fader", T.TEXT, Qt.PenStyle.SolidLine), ("bass EQ", T.BASS_LANE, Qt.PenStyle.DashLine),
-                 ("filter", T.VIOLET, Qt.PenStyle.SolidLine), ("echo", T.GOOD, Qt.PenStyle.DotLine)]
+        items = [("level", T.TEXT, Qt.PenStyle.SolidLine), ("bass EQ", T.BASS_LANE, Qt.PenStyle.DashLine),
+                 ("filter", T.VIOLET, Qt.PenStyle.SolidLine), ("echo", T.GOOD, Qt.PenStyle.DotLine),
+                 ("reverb", T.VOCAL_LANE, Qt.PenStyle.DotLine)]
+        if boosted:
+            items.insert(2, ("treble", T.WAVE_HIGH, Qt.PenStyle.DashDotLine))
         lx = r.right() - 10
         p.setFont(T.font(8))
         for name, color, style in reversed(items):
@@ -182,6 +213,7 @@ class Planner(QFrame):
         self.a_pos = 0
         self.master_bpm = 120.0
         self.technique, self.params, self.sync = "bass_swap", {}, True
+        self.effects, self.riser_end = [], "cut"
         self.out_bar = self.in_bar = 1
 
         outer = QVBoxLayout(self)
@@ -235,14 +267,14 @@ class Planner(QFrame):
         lay.addWidget(self.suggest)
 
         lay.addWidget(caps("Technique"))
-        cards = QHBoxLayout()
+        cards = QGridLayout()
         cards.setSpacing(8)
         self.cards = {}
-        for key in TECHNIQUES:
+        for i, key in enumerate(TECHNIQUES):  # three to a row
             c = TechniqueCard(key)
             c.clicked.connect(lambda _=False, k=key: self._select(k))
             self.cards[key] = c
-            cards.addWidget(c)
+            cards.addWidget(c, i // 3, i % 3)
         lay.addLayout(cards)
         self.blurb = label("", 10, color=T.MUTED)
         self.blurb.setWordWrap(True)
@@ -253,6 +285,33 @@ class Planner(QFrame):
         self.param_grid.setVerticalSpacing(5)
         self.param_grid.setColumnMinimumWidth(0, 110)
         lay.addLayout(self.param_grid)
+
+        fx = QHBoxLayout()
+        fx.setSpacing(6)
+        fx_label = caps("Effects")
+        fx_label.setFixedWidth(110)
+        fx_label.setToolTip(f"Up to {MAX_EFFECTS} on top of the technique; one throw at a time")
+        fx.addWidget(fx_label)
+        self.fx_buttons = {}
+        for key, effect in EFFECTS.items():
+            btn = QPushButton(effect.name)
+            btn.setObjectName("chip")
+            btn.setCheckable(True)
+            btn.setToolTip(effect.blurb)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.clicked.connect(lambda on, k=key: self._effect(k, on))
+            self.fx_buttons[key] = btn
+            fx.addWidget(btn)
+        fx.addStretch(1)
+        lay.addLayout(fx)
+        riser = QHBoxLayout()
+        self.riser_label = caps("Riser ends")
+        self.riser_label.setFixedWidth(110)
+        riser.addWidget(self.riser_label)
+        self.riser_seg = Segmented((("cut at the top", "cut"), ("filter drops back", "release")), "cut")
+        self.riser_seg.changed.connect(self._riser_end)
+        riser.addWidget(self.riser_seg, 1)
+        lay.addLayout(riser)
 
         timing = QGridLayout()
         timing.setHorizontalSpacing(10)
@@ -307,6 +366,7 @@ class Planner(QFrame):
         self.a, self.a_image, self.b, self.a_pos = a, a_image, b, a_pos
         self.master_bpm = a.bpm
         self.b_native = self.b_synced = self.b_image = None
+        self.effects = []
         self.title.setText(f"Into “{b.title}”")
         self.subtitle.setText(b.artist + (f"  ·  {', '.join(b.genre_list[:3])}" if b.genre_list else ""))
         dev = tempo_match(self.master_bpm, b.bpm)[1]
@@ -366,10 +426,35 @@ class Planner(QFrame):
             seg.changed.connect(lambda v, k=prm.key: self._param(k, v))
             self.param_grid.addWidget(seg, row, 1)
         self.param_grid.setColumnStretch(1, 1)
+        fits = effect_options(key)
+        self.effects = [k for k in self.effects if k in fits]
+        for k, btn in self.fx_buttons.items():
+            btn.setVisible(k in fits)
+        self._sync_effects()
         self.tempo.setVisible(not tech.blend)
         self.tempo_label.setVisible(not tech.blend)
         self.tempo.set(self.sync)
         self._refresh(keep=not reset_timing)
+
+    def _effect(self, key: str, on: bool):
+        """Toggle an effect: one throw at a time, and the oldest drops off past MAX_EFFECTS."""
+        group = EFFECTS[key].group
+        self.effects = [k for k in self.effects if k != key and not (on and group and EFFECTS[k].group == group)]
+        if on:
+            self.effects = (self.effects + [key])[-MAX_EFFECTS:]
+        self._sync_effects()
+        self._refresh(keep=True)
+
+    def _riser_end(self, value):
+        self.riser_end = value
+        self._refresh(keep=True)
+
+    def _sync_effects(self):
+        for k, btn in self.fx_buttons.items():
+            btn.setChecked(k in self.effects)
+        show = "riser" in self.effects and TECHNIQUES[self.technique].blend  # a cut drops A at the top anyway
+        self.riser_label.setVisible(show)
+        self.riser_seg.setVisible(show)
 
     def _param(self, key, value):
         self.params[key] = value
@@ -391,7 +476,8 @@ class Planner(QFrame):
         return self.b_synced if self.sync else self.b_native
 
     def plan(self) -> Plan:
-        return Plan(self.technique, dict(self.params), self.sync, self.out_bar, self.in_bar)
+        return Plan(self.technique, dict(self.params), self.sync, self.out_bar, self.in_bar,
+                    effects=list(self.effects), riser_end=self.riser_end)
 
     # ------------------------------------------------------------ keeping it consistent
 
@@ -401,7 +487,8 @@ class Planner(QFrame):
         tech = TECHNIQUES[self.technique]
         auto = tech.build(self.params, self.master_bpm)
         now_bar = self.a.where(self.a_pos)[0]
-        outs = mix_out_points(self.a, self.a_pos, self.technique, self.params, auto.b_start)
+        lead = self.plan().automation(self.master_bpm).b_start  # effects may start the transition earlier
+        outs = mix_out_points(self.a, self.a_pos, self.technique, self.params, lead)
         ins = mix_in_points(self.b, auto)
         if not (keep and self.out_bar in {bar for _, bar in outs}):
             self.out_bar = default_out(outs, now_bar) if outs else 0
@@ -410,6 +497,7 @@ class Planner(QFrame):
         self._fill(self.out_combo, outs, self.out_bar, lambda bar: f"in {bar - now_bar} bars")
         self._fill(self.in_combo, ins, self.in_bar, lambda bar: "")
 
+        auto = self.plan().automation(self.master_bpm, self.b, self.a.track)  # swap on B's bass, A's loop, effects
         deck = self.b_deck()
         ratio = deck.ratio if deck else 1.0
         virtual_b = deck or Deck(self.b, np.zeros((0, 2), np.float32), ratio)

@@ -1,4 +1,4 @@
-"""Offline DSP for rendering a transition: kill EQ, DJ filter, echo and a limiter.
+"""Offline DSP for rendering a transition: kill/boost EQ, DJ filter, echo, reverb and a limiter.
 
 A transition is rendered ahead of time (well under a second for a long blend), so the live
 audio callback only ever copies samples.
@@ -6,6 +6,7 @@ audio callback only ever copies samples.
 import math
 
 import numpy as np
+import pedalboard
 from numba import njit
 from scipy.signal import butter, sosfilt
 
@@ -21,10 +22,12 @@ def _lr4(kind: str, fc: float) -> np.ndarray:
 
 
 LR_LOW, LR_HIGH = _lr4("lowpass", LOW_X), _lr4("highpass", HIGH_X)
+REVERB_HP = butter(2, 250.0, "highpass", fs=SR, output="sos")  # keeps the bass out of the wash
 
 
 def isolator(x: np.ndarray, low: np.ndarray, mid: np.ndarray, high: np.ndarray) -> np.ndarray:
-    """3-band kill EQ; with every gain at 1 the bands sum back to the input exactly."""
+    """3-band isolator: 0 kills a band, 1 is 0 dB, 2 boosts it 6 dB; with every gain at 1 the bands
+    sum back to the input exactly."""
     lo = sosfilt(LR_LOW, x, axis=0)
     hi = sosfilt(LR_HIGH, x, axis=0)
     md = x - lo - hi
@@ -44,7 +47,8 @@ def dj_filter(x, knob, resonance, sr):
     """One-knob DJ filter: knob < 0 sweeps a low-pass down to 150 Hz, > 0 a high-pass up to 5 kHz.
 
     A low-pass then a high-pass state-variable filter (Zavalishin's TPT form, which stays clean
-    under fast modulation); each parks at the edge of the audio band when not in use."""
+    under fast modulation); each parks at the edge of the audio band when not in use. `resonance`
+    is a Q per sample."""
     n = x.shape[0]
     y = np.empty_like(x)
     l1 = np.zeros(2)
@@ -53,7 +57,7 @@ def dj_filter(x, knob, resonance, sr):
     h2 = np.zeros(2)
     for i in range(n):
         v = knob[i]
-        q = 0.707 + (resonance - 0.707) * min(abs(v) * 4.0, 1.0)  # resonance fades in off-center
+        q = 0.707 + (resonance[i] - 0.707) * min(abs(v) * 4.0, 1.0)  # resonance fades in off-center
         f_lp = 20000.0 * (150.0 / 20000.0) ** (-v) if v < 0 else 20000.0
         f_hp = 20.0 * (5000.0 / 20.0) ** v if v > 0 else 20.0
         a1, a2, a3, _ = _svf(f_lp, q if v < 0 else 0.707, sr)
@@ -97,6 +101,15 @@ def echo(x, send, feedback, delay, sr):
     return y
 
 
+def reverb(x: np.ndarray, send: np.ndarray, size: float) -> np.ndarray:
+    """A room fed through a send (high-passed first); returns only the reverb, at about the level
+    of what went in. Reverb is linear, so automating the send ahead of it is exact."""
+    feed = sosfilt(REVERB_HP, x * send[:, None], axis=0).astype(np.float32)
+    room = pedalboard.Reverb(room_size=size, damping=0.45, wet_level=1.0, dry_level=0.0, width=1.0)
+    wet = room(np.ascontiguousarray(feed.T), SR).T
+    return (wet / (1.15 + 0.7 * size)).astype(np.float32)  # the room's own gain, measured
+
+
 @njit(cache=True, nogil=True)
 def limiter(x, ceiling, release_s, sr):
     """Peak limiter with instant attack, so nothing passes above `ceiling`."""
@@ -133,16 +146,21 @@ def render(a: np.ndarray, b: np.ndarray, auto, spb: float) -> np.ndarray:
     n = len(a)
     mix = np.zeros((n, 2), np.float32)
     delay = max(256, int(round(auto.echo_beats * spb)))
-    for deck, x in (("A", a), ("B", b)):
+    for deck, x in (("A", a), ("B", b)):  # each deck: EQ -> echo and reverb sends -> filter -> fader
         lane = lambda name: auto.curve(deck, name, n, spb)
         fader = lane("fader")
         y = isolator(x, lane("low"), lane("mid"), lane("high"))
+        wet = np.zeros_like(y)
         send = lane("echo")
-        wet = echo(y, send, lane("feedback"), delay, SR) if send.any() else 0.0
+        if send.any():
+            wet += echo(y, send, lane("feedback"), delay, SR)
+        send = lane("reverb")
+        if send.any():
+            wet += reverb(y, send, auto.reverb_size)
         y = y * lane("dry")[:, None] + wet
         knob = lane("filter")
         if knob.any():
-            y = dj_filter(np.ascontiguousarray(y), knob.astype(np.float64), float(auto.resonance), SR)
+            y = dj_filter(np.ascontiguousarray(y), knob.astype(np.float64), lane("resonance").astype(np.float64), SR)
             y = _edges(x, y, start=deck == "A" and knob[0] == 0, end=deck == "B" and knob[-1] == 0)
         mix += y * fader[:, None]
     return limiter(mix, 0.98, 0.12, SR)  # decks peak at 0.98 alone, so only overlaps get limited
@@ -152,6 +170,6 @@ def warmup():
     """Compile the numba kernels once (cached on disk after the first run)."""
     x = np.zeros((512, 2), np.float32)
     ones = np.ones(512, np.float32)
-    dj_filter(x, np.full(512, 0.3), 1.5, SR)
+    dj_filter(x, np.full(512, 0.3), np.full(512, 1.5), SR)
     echo(x, ones, ones * 0.5, 64, SR)
     limiter(x, 0.9, 0.1, SR)

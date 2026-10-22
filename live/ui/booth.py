@@ -6,7 +6,7 @@ from PySide6.QtGui import QFont, QFontMetrics
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QScrollArea, QVBoxLayout, QWidget
 
 from ..library import KEY_NAMES
-from ..mixes import TECHNIQUES
+from ..mixes import EFFECTS, TECHNIQUES
 from . import theme as T
 from .widgets import Painted, Segmented, caps, clear, label
 
@@ -286,6 +286,16 @@ class Booth(QFrame):
             self._plan_line(f"<span style='color:{T.MUTED}'>B enters</span>&nbsp;&nbsp;bar {inn[1]} — {inn[2]} "
                             f"<b>{data['in_probs'][inn[0]]:.0%}</b>")
             self._plan_line(f"<span style='color:{T.MUTED}'>Setting</span>&nbsp;&nbsp;{data['setting']}")
+        elif kind == "effects":
+            probs = data["probs"]
+            parts = [f"<b>{EFFECTS[k].name} {v:.0%}</b>" if k in data["chosen"] else f"{EFFECTS[k].name} {v:.0%}"
+                     for k, v in sorted(probs.items(), key=lambda kv: -kv[1])]
+            line = " · ".join(parts) if parts else "none fit"
+            if data["riser_end"]:
+                line += f" · riser ends with a {data['riser_end']}"
+            if data["skipped"]:
+                line += f" <span style='color:{T.FAINT}'>(not again: {', '.join(EFFECTS[k].name for k in data['skipped'])})</span>"
+            self._plan_line(f"<span style='color:{T.MUTED}'>Effects</span>&nbsp;&nbsp;{line}")
         elif kind == "log":
             self.log(data["text"], data.get("tone", "info"))
         elif kind == "exhausted":

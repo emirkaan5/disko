@@ -20,7 +20,8 @@ An AI DJ. A **System One decision model** (Jev, Kev or Laya) picks the next trac
 12. [Evaluation and learning](#12-evaluation-and-learning)
 13. [Risks](#13-risks)
 14. [Open decisions](#14-open-decisions)
-15. [References](#15-references)
+15. [Mix quality and effects](#15-mix-quality-and-effects-live-app-2026-10-02)
+16. [References](#16-references)
 
 ## 1. Goal and scope
 
@@ -498,7 +499,62 @@ Each phase ends with a check.
 | Library | Local files; size and formats TBD |
 | Project goal (personal tool, portfolio, research) | TBD; decides how rigorous Phase 4 gets |
 
-## 15. References
+## 15. Mix quality and effects (live app, 2026-10-02)
+
+The live deck (`live/`) plays real transitions now. Two things to improve: where mixes land, and what a DJ can do in them.
+
+> **Status, 2026-10-02:** all of 15.1–15.5 is built. Cue points on a phrase start went from 35% to 99.9% (mix-out) and 77% to 100% (mix-in) per `scripts/audit_cues.py`; `scripts/render_mix.py` renders any technique + effects to a WAV for listening. Not yet judged by ear.
+
+### 15.1 Cue points on real phrases
+
+Every cue was already on a downbeat (allin1's bars), but "phrases" were counted as bars 1, 9, 17… from the top of the track. Across the 568 house tracks only **37%** of section starts fall on that grid: most tracks have a pickup or a 4-bar intro, so "next phrase" usually lands mid-phrase. The beats line up but the phrases don't. Also off-grid: "as late as it fits", "B's bass lands on the swap", and the fallback when the chosen bar passed while Kev was deciding. allin1's downbeat phase itself is mostly right (sections start on its downbeats in 455/494 tracks; ~10 look two beats off).
+
+- **Phrase grid per track:** section starts snapped to the nearest downbeat, plus every 8 bars after each until the next section; 4-bar steps when a track has no sections.
+- **Every cue uses it:** Kev's mix-out options, mix-in points, the manual planner, the "bar went by" fallback. "Latest" snaps down to the last phrase start that fits.
+- **Bass swap flips:** B enters on a phrase start and the swap moves to the bar where B's bass actually arrives (when that falls inside the blend), not the other way round.
+- **Downbeat repair:** when a track's sections consistently start on beat 3 of allin1's bars, rotate its downbeats by two beats.
+- **Checks:** a per-transition log line (bars, sections at each, kick-lock lag and quality) and `scripts/audit_cues.py`, which counts off-phrase cues before/after.
+
+### 15.2 DSP building blocks
+
+- **Deck timeline (loops):** each deck in a transition gets a map *transition beat → source beat*, so it can jump back and repeat. Loop lengths come from the measured beat period, so loops are beat-exact; each jump gets a short crossfade.
+- **Reverb send:** per deck, `pedalboard.Reverb` at 100% wet. Reverb is linear, so automating the send before it is exact. The send is high-passed (no bass in the wash); the tail rings past the deck's dry cut like the echo.
+- **EQ boost:** band gains may go above 1 (up to +6 dB); the limiter catches the peaks.
+- **Fixed chain:** timeline (loops) → isolator EQ → echo/reverb sends → DJ filter → fader.
+
+### 15.3 Two layers: techniques and effects
+
+**Techniques** decide the hand-off: Bass Swap, Filter Sweep, Echo Out, Drop Cut, Smooth Fade, and new **Reverb Wash** (A swells into a reverb over 1–2 bars and stops on the downbeat; its tail washes over B's start; any tempo or key).
+
+**Effects** are flourishes on top of a technique, anchored to its key moment (the swap, the cut, or A's exit). They stack, up to two per mix:
+
+| Effect | What happens |
+|---|---|
+| **Riser** | Rising resonant high-pass on A over 2–4 bars with a little reverb. Ends one of two ways (Kev picks): **cut** (A vanishes at the top as B's low end lands) or **release** (the filter drops back and A plays on briefly). |
+| **Loop Roll** | A repeats its last bar, then ½, ¼, ⅛ while B keeps playing underneath (blend) or until the cut. A's bass is killed once the loop gets shorter than a bar. |
+| **Echo Throw** | A's last beat thrown into a tempo-synced echo as it leaves. |
+| **Reverb Throw** | The same with a reverb tail. Only one of the two throws per mix. |
+
+**Loop Extend** is not a flourish and Kev doesn't pick it: when the chosen blend doesn't fit before A ends, code loops A's last vocal-free 4- or 8-bar phrase (at most twice) instead of falling back to an echo-out. Always available.
+
+### 15.4 Kev
+
+- Effects unlock from the mix into the **5th track**; before that Kev only picks the technique.
+- Each effect that fits the technique is its own yes/no question; keep the ones above 50%, highest first, at most two, one throw. The riser's ending is a choice question. All of these ride in the same call as the cue questions, so no added latency.
+- No effect twice in a row. Kev's state lists the last few mixes and their effects so it can vary them.
+- The rules fallback (`recommend`) learns Reverb Wash.
+
+### 15.5 Build order
+
+1. Phrase grid, cue snapping, downbeat repair, audit script, per-mix log.
+2. DSP: timeline/loops, reverb send, EQ boost; test renders to WAV.
+3. Loop Extend (first user of loops; replaces the late fallback).
+4. Effects layer: Riser, Loop Roll, Echo/Reverb Throw, stacking.
+5. Reverb Wash technique.
+6. Kev: effect questions, riser ending, 5th-track unlock, mix history.
+7. UI: effect picker in the planner, loop/riser regions in the preview, playhead follows loops.
+
+## 16. References
 
 **System One models**
 
