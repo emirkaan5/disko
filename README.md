@@ -51,6 +51,54 @@ Other ways in:
 
 The first skips the welcome screen. The second renders the window offscreen to a PNG with no sound; `--scenario` takes `welcome`, `indexing`, `start`, `browse`, `plan`, `queued`, `mix`, `after`, `kev`, `kevmix` or `kevafter`. `--house` uses the house test set in `data/house` instead of a playlist.
 
+### Controlling a set from elsewhere
+
+Start disko with `--control` (or run it without a window: `--headless --playlist DIR`) and steer it from a terminal or from Hermes:
+
+```bash
+.venv-live/bin/python -m live --headless --playlist ~/Music/set
+.venv-live/bin/python -m live.ctl start
+.venv-live/bin/python -m live.ctl energy up
+.venv-live/bin/python -m live.ctl status
+```
+
+The control socket lives in `~/.disko`, readable only by you, and every request needs the token written next to it. The Hermes plugin is in `integrations/hermes/disko`. `python -m live --fake 12` runs everything on a synthetic catalog with no real music.
+
+### Beatport (browsing only)
+
+disko can sign in to Beatport and read your playlists, Beatport charts and catalog metadata (tempo, Camelot key, genre, length). It can't play Beatport audio: the stream interface isn't documented and Beatport's terms decide whether disko may decode it. See `BEATPORT_INTEGRATION_PLAN.md`.
+
+It needs two things:
+
+1. **disko's own client ID**, issued by Beatport with `http://127.0.0.1:8765/callback` registered as its redirect URI. Put it in a `.env` file at the repository root. git ignores `.env`, and `.env.example` shows the format:
+
+   ```bash
+   cp .env.example .env && chmod 600 .env
+   ```
+
+   Then set `DISKO_BEATPORT_CLIENT_ID` (and `DISKO_BEATPORT_CLIENT_SECRET` if Beatport gave you one). Alternatively, `python -m live.sources.beatport set-client` stores them in the Keychain; the `.env` values win if both are set. Sign-in tokens always go in the Keychain.
+
+   Beatport's docs page has its own client ID, which some community tools copy. disko refuses it.
+2. **A sign-in:**
+
+   ```bash
+   .venv-live/bin/python -m live.sources.beatport login
+   ```
+
+Then:
+
+```bash
+.venv-live/bin/python -m live.sources.beatport status
+.venv-live/bin/python -m live.sources.beatport playlists
+.venv-live/bin/python -m live.sources.beatport tracks my:123
+.venv-live/bin/python -m live.sources.beatport track 17606729 --raw
+.venv-live/bin/python -m live.sources.beatport logout
+```
+
+disko uses Beatport for browsing, track details and passing those details to Kev on your Mac. To restrict that, add `live/sources/capabilities/beatport.json` (the format is in `live/sources/policy.py`); if the file exists, it replaces the default.
+
+The v4 docs don't show response formats, so check the field mapping (`track_info` in `live/sources/beatport/source.py`) against the `--raw` output from your first real call. `tests/fake_beatport.py` is the stand-in server the tests use. Run it on its own and pass its address with `--api` to try the commands without Beatport.
+
 ## Setup
 
 disko runs on Apple Silicon Macs: allin1 and Kev both use MLX. It uses Python 3.14 and [uv](https://docs.astral.sh/uv/), with one venv per job, because essentia-tensorflow clashes with plain essentia.

@@ -11,6 +11,7 @@ import soxr
 from scipy.signal import butter, sosfilt
 
 from .library import Track
+from .sources import Operation, open_track_audio, require
 
 SR = 44100
 TARGET_LUFS = -11.0  # every deck is gain-matched to this short-term loudness
@@ -34,15 +35,18 @@ def decode(path) -> tuple:
 
 @lru_cache(maxsize=3)
 def native_audio(track: Track) -> np.ndarray:
-    """(n, 2) float32 at SR, gain-matched to TARGET_LUFS."""
-    x, sr = decode(track.path)
+    """(n, 2) float32 at SR, gain-matched to TARGET_LUFS (peak-limited only, if its loudness is
+    unknown). Read through the track's source, which refuses unless decoding is permitted."""
+    with open_track_audio(track) as handle:
+        x, sr = handle.read()
     if x.shape[1] == 1:
         x = np.repeat(x, 2, axis=1)
     x = x[:, :2]
     if sr != SR:
         x = soxr.resample(x, sr, SR)
     # Match loudness, but never push the peaks past 0.98: raw playback has no limiter.
-    gain = min(10 ** (np.clip(TARGET_LUFS - track.loudness, -9.0, 6.0) / 20), 0.98 / max(float(np.abs(x).max()), 1e-6))
+    match = 1.0 if track.loudness is None else 10 ** (np.clip(TARGET_LUFS - track.loudness, -9.0, 6.0) / 20)
+    gain = min(match, 0.98 / max(float(np.abs(x).max()), 1e-6))
     return np.ascontiguousarray(x * gain, dtype=np.float32)
 
 
@@ -186,7 +190,13 @@ def sync_ratio(track: Track, master_period: float) -> float:
     return min((native / (master_period * m) for m in (0.5, 1.0, 2.0)), key=lambda f: abs(f - 1))
 
 
+DECK_OPERATIONS = (Operation.DECODE, Operation.ANALYZE, Operation.MIX)
+
+
 def load_deck(track: Track, ratio: float = 1.0) -> Deck:
+    """A deck for the track: decoded, measured and stretched in memory. Refused up front unless its
+    source permits all three (nothing is written to disk here)."""
+    require(track, *DECK_OPERATIONS)
     waveform(track)  # warm the caches off the UI thread
     beat_period(track)
     return Deck(track, stretch(native_audio(track), ratio), ratio)

@@ -3,6 +3,9 @@
     .venv-live/bin/python -m live                          # welcome screen: pick a playlist folder
     .venv-live/bin/python -m live --playlist ~/Music/set   # open that folder straight away
     .venv-live/bin/python -m live --house                  # the house test set, analyzed in full in advance
+    .venv-live/bin/python -m live --fake 12                # a synthetic catalog (live/sources/fake.py): no real music
+    .venv-live/bin/python -m live --playlist DIR --control # also take commands from live.ctl / Hermes (live/control.py)
+    .venv-live/bin/python -m live --headless --playlist DIR   # no window: Kev DJs, controlled through live.ctl
     .venv-live/bin/python -m live --snapshot out.png --scenario mix   # render offscreen, no sound
 """
 import argparse
@@ -139,10 +142,105 @@ def schedule_dev(app, win, args):
         QTimer.singleShot(int(args.quit_after * 1000), win.close)
 
 
+def start_control(session, tcp, into: dict):
+    from .control import ControlServer
+    if "control" in into:  # a second window takes the commands over
+        into["control"].close()
+    server = ControlServer(session, tcp=tcp).start()
+    into["control"] = server
+    where = f" and {server.tcp_address[0]}:{server.tcp_address[1]}" if server.tcp_address else ""
+    print(f"control: {server.socket_path}{where} (python -m live.ctl status)", flush=True)
+    return server
+
+
+def headless(args, tcp) -> int:
+    """Kev DJs with no window; the set is started and steered through the control interface."""
+    import signal
+
+    from .engine import Engine
+    from .indexer import DeepAnalyzer, FastIndexer
+    from .kev import Kev
+    from .library import Library
+    from .playlist import Playlist
+    from .session import Session
+
+    def prepare(track, ratio=1.0):
+        from .audio import load_deck
+        return load_deck(track, ratio), None
+
+    def prepare_synced(track, master_period):
+        from .audio import sync_ratio
+        return prepare(track, sync_ratio(track, master_period))
+
+    analyzer = None
+    if args.fake:
+        library = fake_library(args.fake)
+    elif args.playlist:
+        playlist = Playlist(args.playlist)
+        indexer = FastIndexer(playlist)
+        indexer.start()
+        print(f"indexing {len(indexer.todo)} new files in {playlist.folder}…", flush=True)
+        while True:
+            kind, info = indexer.events.get()
+            if kind == "fatal":
+                print("indexing failed:", info["error"], file=sys.stderr)
+                return 1
+            if kind == "finished":
+                break
+        library = Library(playlist.load(), name=playlist.name)
+        analyzer = DeepAnalyzer(playlist)
+        analyzer.start()
+    elif args.house:
+        library = Library()
+    else:
+        print("--headless needs --playlist DIR, --house or --fake N", file=sys.stderr)
+        return 2
+    kev = Kev()
+    engine = Engine()
+    session = Session(library, engine, kev, prepare, prepare_synced, analyzer=analyzer)  # owned by this thread
+    live = {}
+    stop = []
+    signal.signal(signal.SIGINT, lambda *_: stop.append(1))
+    signal.signal(signal.SIGTERM, lambda *_: stop.append(1))
+    try:
+        start_control(session, tcp, live)  # before Kev's server: if control can't start, nothing is left running
+        session.pool.submit(kev.start)
+        print(f"{library.name}: {len(library.tracks)} tracks. Start the set with: python -m live.ctl start", flush=True)
+        while not stop:
+            session.tick()
+            time.sleep(0.02)
+    except RuntimeError as e:
+        print(e, file=sys.stderr)
+        return 1
+    finally:
+        if "control" in live:
+            live["control"].close()
+        session.close()
+        engine.close()
+        if analyzer is not None:
+            analyzer.close()
+        kev.stop()  # only if this run started it
+    return 0
+
+
+def fake_library(n: int):
+    from .library import Library
+    from .sources.fake import FakeSource
+    src = FakeSource(n=n, seconds=180.0)
+    return Library(src.library_tracks(), name=src.label)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--playlist", help="open this folder instead of showing the welcome screen")
     ap.add_argument("--house", action="store_true", help="use the house test set (data/house), skipping the welcome screen")
+    ap.add_argument("--fake", type=int, metavar="N",
+                    help="use a synthetic catalog of N generated tracks (tests the source/policy path; no real music)")
+    ap.add_argument("--control", action="store_true",
+                    help="accept commands on the local control socket (~/.disko/control.sock, token-protected)")
+    ap.add_argument("--control-tcp", metavar="HOST:PORT",
+                    help="also accept them over TCP (token-protected; for a controller in a container)")
+    ap.add_argument("--headless", action="store_true", help="no window: Kev DJs, controlled with python -m live.ctl")
     ap.add_argument("--snapshot", help="render the window to this PNG offscreen and exit")
     ap.add_argument("--scenario", default="mix",
                     choices=["welcome", "indexing", "start", "browse", "plan", "queued", "mix", "after", "kev", "kevmix",
@@ -152,7 +250,7 @@ def main():
     ap.add_argument("--grab", action="append", help="(real run) PATH@SECONDS: save a window screenshot then")
     ap.add_argument("--skip-at", type=float, action="append", help="(real run) press 'Skip to the mix' at these seconds")
     ap.add_argument("--quit-after", type=float, help="(real run) close after this many seconds")
-    ap.add_argument("--track", default="jamendo_1011780", help="opening track, uid or part of its title (snapshot)")
+    ap.add_argument("--track", help="opening track, uid or part of its title (snapshot)")
     ap.add_argument("--next", help="incoming track (snapshot); default: the top-ranked one")
     ap.add_argument("--technique", help="technique to plan (snapshot)")
     ap.add_argument("--effects", help="comma-separated effects to add in the planner (snapshot)")
@@ -162,6 +260,12 @@ def main():
     args = ap.parse_args()
     if args.snapshot:
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    tcp = None
+    if args.control_tcp:
+        host, _, port = args.control_tcp.rpartition(":")
+        tcp = (host or "127.0.0.1", int(port))
+    if args.headless:
+        sys.exit(headless(args, tcp))
 
     from PySide6.QtCore import QSettings
     from PySide6.QtWidgets import QApplication
@@ -192,7 +296,8 @@ def main():
             library = Library(playlist.load(), name=playlist.name)
             analyzer = DeepAnalyzer(playlist)
         else:
-            library = Library()
+            library = fake_library(args.fake) if args.fake else Library()
+        args.track = args.track or ("fake:t00" if args.fake else "jamendo_1011780")
         engine = Engine(audio=False)
         win = MainWindow(library, engine, pool=Immediate(), analyzer=analyzer)
         win.timer.stop()
@@ -217,8 +322,12 @@ def main():
         win.show()
         schedule_dev(app, win, args)
         live.update(win=win, engine=engine)
+        if args.control or tcp:
+            start_control(win.session, tcp, live)
 
-    if args.house:
+    if args.fake:
+        open_set(fake_library(args.fake))
+    elif args.house:
         open_set(Library())
     else:
         welcome = WelcomeWindow(QSettings("disko", "disko live"))
@@ -234,6 +343,8 @@ def main():
         if args.playlist:
             welcome.open(args.playlist)
     code = app.exec()
+    if "control" in live:
+        live["control"].close()
     if "engine" in live:
         live["engine"].close()
     kev.stop()

@@ -18,6 +18,7 @@ import numpy as np
 from .audio import SR, Deck
 from .kev import Kev
 from .library import MAX_STRETCH, Library, Track, key_relation, tempo_match
+from .sources import AuthExpired, Operation, PolicyDenied, SourceError, SourceTimeout, allows
 from .mixes import (EFFECTS, PREROLL, TECHNIQUES, Plan, build, effect_options, extension, mix_in_points, mix_window,
                      recommend, stack)
 
@@ -94,18 +95,24 @@ class Cards:
 
     def _energy(self, t: Track) -> str:
         e = self.lib.percentile(t, "energy")
+        if e is None:
+            return "unknown"
         return "low" if e < 0.25 else "medium" if e < 0.6 else "high" if e < 0.85 else "very high"
 
     def vibe(self, t: Track) -> str:
-        pct = lambda f: self.lib.percentile(t, f)
-        mood = "dark" if pct("mood") < 0.3 else "bright" if pct("mood") > 0.7 else "neutral"
-        vocals = "instrumental" if t.vocals < 0.05 else "a few vocal parts" if t.vocals < 0.25 else "vocal-led"
-        groove = "sparse groove" if pct("busyness") < 0.3 else "busy groove" if pct("busyness") > 0.7 else "steady groove"
-        tone = "dark sound" if pct("brightness") < 0.3 else "bright sound" if pct("brightness") > 0.7 else "balanced sound"
+        def bucket(feature, low, high, mid, unknown):
+            p = self.lib.percentile(t, feature)
+            return unknown if p is None else low if p < 0.3 else high if p > 0.7 else mid
+
+        mood = bucket("mood", "dark", "bright", "neutral", "unknown")
+        vocals = ("vocals unknown" if t.vocals is None else "instrumental" if t.vocals < 0.05 else
+                  "a few vocal parts" if t.vocals < 0.25 else "vocal-led")
+        groove = bucket("busyness", "sparse groove", "busy groove", "steady groove", "groove unknown")
+        tone = bucket("brightness", "dark sound", "bright sound", "balanced sound", "sound unknown")
         return f"{self.genre(t)}; energy {self._energy(t)}, mood {mood}; {vocals}; {groove}; {tone}"
 
     def genre(self, t: Track) -> str:
-        return ", ".join(t.genre_list[:2]) or "electronic"
+        return ", ".join(t.genre_list[:2]) or ("style unknown" if t.genres is None else "electronic")
 
     def short(self, t: Track) -> str:
         return f"{self.genre(t)} (energy {self._energy(t)})"
@@ -114,7 +121,10 @@ class Cards:
         dev = tempo_match(master_bpm, b.bpm)[1]
         tempo = ("exact match" if dev <= 0.005 else "close match" if dev <= 0.03 else
                  "stretchable" if dev <= MAX_STRETCH else "too far apart to blend")
-        step = (b.energy - a.energy) / self.lib.spread("energy")
+        spread = self.lib.spread("energy")
+        if a.energy is None or b.energy is None or not spread:
+            return f"tempo {tempo}; {KEY_WORDS[key_relation(a.camelot, b.camelot)[1]]}; energy change unknown"
+        step = (b.energy - a.energy) / spread
         energy = ("big drop" if step < -1 else "drop" if step < -0.35 else "hold" if step <= 0.35 else
                   "lift" if step <= 1 else "big lift")
         return f"tempo {tempo}; {KEY_WORDS[key_relation(a.camelot, b.camelot)[1]]}; energy {energy}"
@@ -133,7 +143,9 @@ class Cards:
         if not t.deep:
             return "how it ends is not known"
         parts = [f"an outro of {bars_words(t.outro_bars)}"] if t.outro_bars else ["no real outro"]
-        if t.vocals < 0.05:
+        if t.vocals is None:
+            parts.append("vocals unknown")
+        elif t.vocals < 0.05:
             parts.append("no vocals")
         else:
             parts.append("vocals until the very end" if t.vocals_out_bars < 4 else
@@ -146,7 +158,7 @@ class Cards:
         if not t.deep:
             return "how it opens is not known"
         parts = [f"{bars_words(t.bass_in_bars)} before its bass comes in"]
-        parts.append("no vocals" if t.vocals < 0.05 else
+        parts.append("vocals unknown" if t.vocals is None else "no vocals" if t.vocals < 0.05 else
                      "vocals from the start" if t.vocals_in_bars < 4 else f"vocals after {bars_words(t.vocals_in_bars)}")
         return "it opens with " + ", ".join(parts)
 
@@ -199,6 +211,7 @@ class KevDJ:
         self.broken = set()  # uids allin1 couldn't map: not picked again
         self.events = queue.Queue()
         self.lift = 0
+        self._pick = None  # the track being prepared, so a source error can be pinned on it
         self._token = 0
         self._brain = ThreadPoolExecutor(max_workers=1, thread_name_prefix="kev-dj")
         self._io = ThreadPoolExecutor(max_workers=8, thread_name_prefix="kev-io")
@@ -214,10 +227,21 @@ class KevDJ:
 
     def _run(self, token, a, now, played, recent, minutes, avoid, mixes):
         emit = lambda kind, **data: token == self._token and self.events.put((kind, data))
+        self._pick = None
         try:
             self._decide(token, emit, a, now, played, recent, minutes, avoid, mixes)
         except NothingLeft:
             emit("exhausted")
+        except AuthExpired as e:  # the source's access is gone: nothing more from it, no retrying
+            emit("source_lost", text=str(e), provider=self._pick.provider if self._pick else None)
+        except SourceTimeout as e:  # transient: the set retries
+            emit("error", text=f"{type(e).__name__}: {e}")
+        except SourceError as e:  # unavailable, not permitted or unreadable: never offer this pick again
+            if self._pick is None:  # about the playing track itself: retrying won't change it
+                emit("blocked", text=str(e))
+            else:
+                self.broken.add(self._pick.uid)
+                emit("skipped", text=f"Skipped “{self._pick.title}”: {e}", track=self._pick)
         except Exception as e:  # the set must go on: report it and let the window fall back
             emit("error", text=f"{type(e).__name__}: {e}")
 
@@ -238,6 +262,9 @@ class KevDJ:
         return True
 
     def _decide(self, token, emit, a, now, played, recent, minutes, avoid, mixes):
+        if not allows(a.track, Operation.SEND_TO_MODEL):
+            raise PolicyDenied(a.track.provider, Operation.SEND_TO_MODEL, "Kev can't be told about this track",
+                               a.track.id)
         if not a.track.deep:  # the opener: allin1 maps it while it plays; the plan needs its bars
             self._map(emit, a.track)
             a.reset_grid()
@@ -252,7 +279,9 @@ class KevDJ:
         # Two tracks in a row by one artist are skipped (unless that leaves nothing; untagged files
         # all count as "Unknown artist", which isn't one).
         recent_artists = {t.artist for t in recent[-2:] if t.artist != "Unknown artist"}
-        ranked = self.lib.rank(a.track, a.bpm, set(played) | avoid | self.broken, self.lift)
+        # only tracks whose source lets their descriptions go to Kev
+        ranked = [c for c in self.lib.rank(a.track, a.bpm, set(played) | avoid | self.broken, self.lift)
+                  if allows(c.track, Operation.SEND_TO_MODEL)]
         if not ranked:
             raise NothingLeft
         fresh = [c for c in ranked if c.track.artist not in recent_artists] or ranked
@@ -278,7 +307,7 @@ class KevDJ:
             p = np.array([short[j].chance for j in left]) + 1e-12
             i = left[int(np.random.choice(len(left), p=p / p.sum()))]
             pick = short[i]
-            b = pick.track
+            b = self._pick = pick.track
             emit("picked", index=i)
             emit("log", text=f"Picked “{b.title}” ({pick.chance:.0%} chance) — flow {pick.flow:.0%}, "
                              f"energy fit {pick.energy:.0%}")
@@ -419,7 +448,7 @@ class KevDJ:
         outro = t.phrase_near(t.n_bars - t.outro_bars + 1, floor, last) if t.outro_bars else None
         if outro is not None:
             bars[outro] = "where the outro starts"
-        if t.vocals > 0.05 and t.vocals_out_bars:
+        if (t.vocals or 0) > 0.05 and t.vocals_out_bars:
             after = t.phrase_after(t.n_bars - t.vocals_out_bars + 1, last)
             if after is not None and after >= floor:
                 bars[after] = "right after the last vocals"

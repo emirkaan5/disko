@@ -7,12 +7,15 @@ where the bass and vocals play) is filled in when it is picked; until then its g
 beats with a bar line every four.
 """
 import json
+import warnings
 from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+
+from .sources.base import Availability, TrackId
 
 ROOT = Path(__file__).resolve().parent.parent / "data" / "house"
 MAX_STRETCH = 0.08  # beyond this tempo change, beatmatched blends are off the table
@@ -60,23 +63,42 @@ def parse_sections(text) -> list:
     return out
 
 
-@dataclass(eq=False)
+# What a track needs before it can be ranked and mixed: beatmatching needs its tempo and every
+# mix plan weighs its key. Everything else (energy, mood, vocals, ...) may be unknown: ranking
+# and Kev's cards then go by what is known and say "unknown" for the rest.
+MIX_MINIMUM = ("bpm", "camelot")
+
+
+@dataclass(eq=False, kw_only=True)
 class Track:
+    """One track and what is known about it.
+
+    Identity is `id`: the provider plus its key. A local track's `uid` is that key alone (its
+    analysis files are named after it); any other provider's `uid` is the whole id ("fake:x7"),
+    so tracks from two sources can't be mistaken for each other. `path` is only where a local
+    file lives: it gives no right to decode a track from any other source, whose audio is opened
+    through `source` and its policy (live/sources/).
+
+    A feature that is None is unknown, not zero. `provenance` says where known values came from."""
     uid: str
-    path: Path
-    title: str
-    artist: str
-    bpm: float
-    camelot: str
-    key_strength: float
-    energy: float          # arousal, 1-9
-    mood: float            # valence, 1-9
-    danceability: float
-    loudness: float        # LUFS
-    busyness: float        # onsets per second
-    brightness: float      # spectral centroid, Hz
-    vocals: float          # share of bars with vocals; until the stems are in, guessed from the voice model
-    genres: str
+    provider: str = "local"
+    path: Path | None = None
+    source: object = None      # the Source to open the audio through; None: a local file at `path`
+    title: str = "Untitled"
+    artist: str = "Unknown artist"
+    availability: Availability | None = None   # None: available if local, else unknown
+    provenance: dict = field(default_factory=dict)
+    bpm: float | None = None
+    camelot: str | None = None
+    key_strength: float | None = None
+    energy: float | None = None        # arousal, 1-9
+    mood: float | None = None          # valence, 1-9
+    danceability: float | None = None
+    loudness: float | None = None      # LUFS
+    busyness: float | None = None      # onsets per second
+    brightness: float | None = None    # spectral centroid, Hz
+    vocals: float | None = None        # share of bars with vocals; until the stems are in, guessed from the voice model
+    genres: str | None = ""            # "; "-separated styles ("" = none found); None = unknown
     duration: float = 0.0
     # Structure: known once allin1 has run on the track (deep=True).
     deep: bool = False
@@ -92,6 +114,35 @@ class Track:
     grid_file: Path | None = None  # allin1's JSON with the beats and downbeats
     rough_beats: tuple = ()    # Essentia's beats: the grid until allin1's is in
 
+    def __post_init__(self):
+        if self.provider == "local":
+            if ":" in self.uid:
+                raise ValueError(f"a local track's uid can't contain ':' ({self.uid!r})")
+        elif not self.uid.startswith(self.provider + ":"):
+            raise ValueError(f"a {self.provider} track's uid must be its full id, not {self.uid!r}")
+        if self.availability is None:
+            self.availability = Availability.AVAILABLE if self.provider == "local" else Availability.UNKNOWN
+        TrackId.parse(str(self.id))  # validates both parts
+
+    @property
+    def id(self) -> TrackId:
+        if self.provider == "local":
+            return TrackId("local", self.uid)
+        return TrackId(self.provider, self.uid.split(":", 1)[1])
+
+    def known(self, feature: str) -> bool:
+        return getattr(self, feature) is not None
+
+    @property
+    def missing(self) -> tuple:
+        """The mixing minimum this track lacks."""
+        return tuple(f for f in MIX_MINIMUM if not self.known(f))
+
+    @property
+    def mixable(self) -> bool:
+        """Playable, with the tempo and key a mix needs."""
+        return self.availability.playable and not self.missing
+
     @cached_property
     def grid(self) -> tuple:
         """(beats, downbeats) in native seconds: allin1's, or until then Essentia's beats with a bar every 4."""
@@ -101,6 +152,8 @@ class Track:
             return beats, repair_downbeats(beats, downbeats, self.sections)
         beats = np.array(self.rough_beats, dtype=float)
         if len(beats) < 8:
+            if self.bpm is None:
+                raise ValueError(f"{self.display}: no beats and no tempo to lay a grid from")
             beats = np.arange(0.0, max(self.duration, 8.0), 60.0 / self.bpm)
         return beats, beats[::4]
 
@@ -170,6 +223,8 @@ class Track:
         b = self.beats
         span = 32 if len(b) > 64 else 4
         if len(b) <= span:
+            if self.bpm is None:
+                raise ValueError(f"{self.display}: tempo unknown")
             return 60.0 / self.bpm
         return float(np.median((b[span:] - b[:-span]) / span))
 
@@ -183,7 +238,7 @@ class Track:
 
     @cached_property
     def genre_list(self) -> list:
-        return [g for g in self.genres.split("; ") if g] if self.genres else []
+        return [g for g in self.genres.split("; ") if g] if self.genres else []  # None (unknown) too
 
     @property
     def display(self) -> str:
@@ -265,9 +320,15 @@ class Candidate:
     score: float
     stretch: float     # factor B would be time-stretched by
     deviation: float   # |stretch - 1|
-    key_score: float
-    key_label: str
-    energy_delta: float
+    key_score: float | None    # None: a key is unknown
+    key_label: str             # "key unknown" then
+    energy_delta: float | None # None: an energy is unknown
+    unknown: tuple = ()        # the ranking signals that couldn't be weighed for this pair
+
+
+# Ranking signals and their weights. Each pair of tracks is scored on the signals both sides know,
+# with the weights renormalized over those, so an unknown never counts as a zero (or a match).
+WEIGHTS = {"tempo": 0.30, "key": 0.22, "energy": 0.18, "vibe": 0.18, "runway": 0.06, "genre": 0.06}
 
 
 class Library:
@@ -276,46 +337,89 @@ class Library:
     def __init__(self, tracks=None, name: str = "House test set"):
         self.tracks = tracks if tracks is not None else load_tracks()
         self.name = name
+        ids = [t.id for t in self.tracks]
+        if len(set(ids)) != len(ids):
+            dupes = sorted({str(i) for i in ids if ids.count(i) > 1})
+            raise ValueError(f"the same track id twice in one library: {', '.join(dupes[:5])}")
         self.by_uid = {t.uid: t for t in self.tracks}
+        self.by_id = {t.id: t for t in self.tracks}
         # The drums' share comes from the stems, so it only counts when every track has been through allin1.
         self.features = tuple(f for f in self.FEATURES if f != "drums" or all(t.drums is not None for t in self.tracks))
-        raw = np.array([[getattr(t, f) for f in self.features] for t in self.tracks], dtype=float).reshape(-1, len(self.features))
-        raw[:, self.features.index("brightness")] = np.log(np.maximum(raw[:, self.features.index("brightness")], 1.0))
+        nan = float("nan")
+        raw = np.array([[nan if getattr(t, f) is None else getattr(t, f) for f in self.features] for t in self.tracks],
+                       dtype=float).reshape(-1, len(self.features))
+        j = self.features.index("brightness")
+        raw[:, j] = np.log(np.maximum(raw[:, j], 1.0))  # NaN (unknown) stays NaN
         self._raw = raw
-        self._z = (raw - raw.mean(0)) / (raw.std(0) + 1e-9)
-        self._index = {t.uid: i for i, t in enumerate(self.tracks)}
+        with np.errstate(invalid="ignore"), warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)  # a column nobody knows: all NaN, and stays so
+            self._z = (raw - np.nanmean(raw, 0)) / (np.nanstd(raw, 0) + 1e-9)
+        self._index = {t.id: i for i, t in enumerate(self.tracks)}
 
-    def spread(self, feature: str) -> float:
-        """The library's standard deviation for a feature."""
-        return float(self._raw[:, self.features.index(feature)].std())
+    @property
+    def unrankable(self) -> list:
+        """(track, reason) for every track that can't be mixed: unavailable, or short of MIX_MINIMUM."""
+        out = []
+        for t in self.tracks:
+            if not t.availability.playable:
+                out.append((t, t.availability.value))
+            elif t.missing:
+                out.append((t, "unknown " + " and ".join(t.missing)))
+        return out
 
-    def percentile(self, track: Track, feature: str) -> float:
-        """Where the track sits in the library for a feature, 0-1."""
+    def spread(self, feature: str) -> float | None:
+        """The library's standard deviation for a feature, over the tracks that know it."""
+        col = self._raw[:, self.features.index(feature)]
+        col = col[~np.isnan(col)]
+        return float(col.std()) if len(col) else None
+
+    def percentile(self, track: Track, feature: str) -> float | None:
+        """Where the track sits among the tracks that know a feature, 0-1; None if it's unknown."""
+        if feature not in self.features:
+            return None
         j = self.features.index(feature)
+        v = self._raw[self._index[track.id], j]
+        if np.isnan(v):
+            return None
         col = self._raw[:, j]
-        return float((col < self._raw[self._index[track.uid], j]).mean())
+        col = col[~np.isnan(col)]
+        return float((col < v).mean())
 
     def rank(self, current: Track, master_bpm: float, played: set, lift: int = 0) -> list:
-        """Every unplayed track scored as the next one after `current`, best first.
+        """Every unplayed, mixable track scored as the next one after `current`, best first.
 
-        lift: -1 to cool the energy down, 0 to hold it, +1 to lift it."""
-        zc = self._z[self._index[current.uid]]
+        lift: -1 to cool the energy down, 0 to hold it, +1 to lift it. Tracks short of the mixing
+        minimum or not available are left out (see `unrankable`); an empty list means nothing is
+        left to play, and the set should end rather than repeat or guess."""
+        zc = self._z[self._index[current.id]]
         out = []
         for i, t in enumerate(self.tracks):
-            if t is current or t.uid in played:
+            if t is current or t.uid in played or not t.mixable:
                 continue
+            signals, unknown = {}, []
             stretch, dev = tempo_match(master_bpm, t.bpm)
-            s_tempo = max(0.0, 1 - dev / MAX_STRETCH)
-            k, label = key_relation(current.camelot, t.camelot)
-            trust = float(np.clip((min(current.key_strength, t.key_strength) - 0.3) / 0.5, 0.2, 1.0))
-            s_key = 1 - trust * (1 - k)
+            signals["tempo"] = max(0.0, 1 - dev / MAX_STRETCH)
+            k, label = None, "key unknown"
+            if current.camelot is not None:
+                k, label = key_relation(current.camelot, t.camelot)
+                strengths = [s for s in (current.key_strength, t.key_strength) if s is not None]
+                # a key with no confidence figure is taken at its word
+                trust = float(np.clip((min(strengths) - 0.3) / 0.5, 0.2, 1.0)) if len(strengths) == 2 else 1.0
+                signals["key"] = 1 - trust * (1 - k)
             z = self._z[i]
-            s_energy = float(np.exp(-((z[0] - zc[0] - 0.75 * lift) ** 2) / (2 * 0.8 ** 2)))
-            s_vibe = float(np.exp(-np.mean((z[1:] - zc[1:]) ** 2) / 2))
-            s_runway = min(t.bass_in_bars / 16, 1.0) if t.deep else 0.5  # unknown until it is analyzed
-            g1, g2 = set(current.genre_list), set(t.genre_list)
-            s_genre = len(g1 & g2) / len(g1 | g2) if g1 | g2 else 0.0
-            score = 0.30 * s_tempo + 0.22 * s_key + 0.18 * s_energy + 0.18 * s_vibe + 0.06 * s_runway + 0.06 * s_genre
-            out.append(Candidate(t, score, stretch, dev, k, label, t.energy - current.energy))
+            if not (np.isnan(z[0]) or np.isnan(zc[0])):
+                signals["energy"] = float(np.exp(-((z[0] - zc[0] - 0.75 * lift) ** 2) / (2 * 0.8 ** 2)))
+            both = ~(np.isnan(z[1:]) | np.isnan(zc[1:]))
+            if both.any():
+                signals["vibe"] = float(np.exp(-np.mean((z[1:][both] - zc[1:][both]) ** 2) / 2))
+            if t.deep:
+                signals["runway"] = min(t.bass_in_bars / 16, 1.0)
+            if current.genres is not None and t.genres is not None:
+                g1, g2 = set(current.genre_list), set(t.genre_list)
+                signals["genre"] = len(g1 & g2) / len(g1 | g2) if g1 | g2 else 0.0
+            unknown = tuple(name for name in WEIGHTS if name not in signals)
+            score = sum(WEIGHTS[n] * v for n, v in signals.items()) / sum(WEIGHTS[n] for n in signals)
+            delta = None if t.energy is None or current.energy is None else t.energy - current.energy
+            out.append(Candidate(t, score, stretch, dev, k, label, delta, unknown))
         out.sort(key=lambda c: -c.score)
         return out

@@ -1,6 +1,138 @@
 # Beatport integration plan
 
-Status: proposal, not implemented. Repository baseline: 47306415d1b94a9597e5fe75113fd94f1c4e7578.
+Status:
+- Milestones 1, 2 (synthetic audio only) and 4 are implemented.
+- Milestone 3: the provider-neutral part is implemented, and so is a Beatport browsing adapter built against a local fake server. It needs only the listener's own client ID and a sign-in. Its permissions (browse, metadata, Kev) are built in; at the listener's request (2026-11-08) the capability matrix is optional and only restricts them.
+- Beatport playback is not built: the stream interface is undocumented, and Gate 0 decides whether disko may decode it.
+
+Repository baseline: 47306415d1b94a9597e5fe75113fd94f1c4e7578.
+
+## Implementation status
+
+No Beatport credential or audio is in the repository. The only Beatport endpoints called are the documented v4 OAuth, playlist, chart and catalog-track ones. The tests call them on the fake server, never on Beatport.
+
+### Milestone 1: provider-neutral contracts
+- `live/sources/`:
+  - `base.py`: provider-qualified `TrackId`, browsing types (`TrackInfo`, `Page`, `PlaylistRef`), `Availability`, `Operation`, and bounded `AudioHandle`s. Handles expire, and they close when their source disconnects; a disconnected source refuses all further reads.
+  - `policy.py`: a fail-closed `Policy` built from a capability matrix. It grants nothing to any provider but local files until the matrix names a written agreement.
+  - `local.py`: the playlist folder as `LocalSource`.
+  - `fake.py`: a synthetic `FakeSource` with configurable permissions, missing metadata and failure modes.
+  - `beatport.py`: reports the gate status and refuses to connect.
+- `live/sources/capabilities/beatport.json` was the Gate 0 capability matrix. The listener removed it on 2026-11-08; Beatport's permissions now come from `beatport.default_policy()`, and the file, if added back, restricts them.
+- Track identity:
+  - A track's identity is its provider plus its key.
+  - A local track keeps its bare file id as `uid`, because its analysis files are named after it. Any other provider's `uid` is the full id.
+  - A library refuses duplicate ids.
+- Unknown features:
+  - A feature the source doesn't supply is `None`, and each known value carries its `provenance`.
+  - `MIX_MINIMUM` (tempo and key) gates ranking, and `Library.unrankable` says why a track is left out.
+- Ranking:
+  - `Library.rank` scores each pair on the signals both tracks know and renormalizes the weights over those.
+  - Kev's track descriptions, the mix rules and the deck and browser UI say "unknown" instead of inventing values.
+  - The house set ranks exactly as before; `tests/fixtures/rank_house.json` was captured from commit 7f2106d.
+- Deny-before-use:
+  - Decoding goes through the track's source (`open_track_audio`).
+  - `load_deck` requires DECODE, ANALYZE and MIX.
+  - allin1 (`DeepAnalyzer`) requires DECODE, ANALYZE and both kinds of disk retention, and reads local files only.
+  - Kev is told only about tracks whose policy allows SEND_TO_MODEL.
+
+### Milestone 2: playback (synthetic only)
+- `python -m live --fake N` runs the whole app on the synthetic catalog.
+- `tests/test_engine.py` checks the engine on synthetic PCM where every sample is tagged with its origin: handoff, seek, cancel, pause, end of track, snapshots and volume, plus two tracks joined by one transition.
+
+### Milestone 3: the provider-neutral part
+- `live/sources/pool.py`:
+  - `candidate_pool` builds a bounded pool from a source's playlist. Paging is capped, so a source that misreports its totals can't keep it paging.
+  - Unplayable tracks are left out with their reason, and duplicates are dropped.
+  - `track_from_info` copies only the metadata the source supplied.
+- Failures during a set:
+  - A pick whose audio is unavailable, not permitted or unreadable goes on `KevDJ.broken` and is never offered again. Kev picks again at once, and when nothing is left the set ends rather than retrying.
+  - Timeouts are retried.
+  - `AuthExpired` and `Session.disconnect(source)` stop whatever came from that source and say why; nothing already decoded is assumed to stay authorized.
+- Not built, because each needs the Beatport contract (Gate 0): the connect/disconnect and playlist UI, the just-in-time analysis path (Branch A or B), and incremental streaming buffers.
+
+### Milestone 3: the Beatport adapter (browsing; built against a fake server)
+- `live/sources/beatport/` implements the documented v4 flow. The order of checks below makes it work once the listener has their own client ID, with no code changes; nothing in it has touched Beatport yet.
+  - `auth.py`:
+    - Sign-in uses OAuth2 authorization code with PKCE, through a loopback redirect (`http://127.0.0.1:8765/callback` by default; `DISKO_BEATPORT_REDIRECT` overrides it).
+    - The callback checks `state`. Tokens are refreshed ahead of expiry and once more on a 401, and revocation goes in a form body, never a URL.
+    - The client ID and secret are read from `DISKO_BEATPORT_CLIENT_ID` and `DISKO_BEATPORT_CLIENT_SECRET`, in the environment or a git-ignored `.env` at the repository root (see `.env.example`).
+      - If neither is set, they come from the Keychain (`set-client`).
+      - disko warns when the `.env` holding a secret is readable by others.
+    - Tokens always live in the macOS Keychain (service `disko.beatport`). Values are written through `security -i`'s stdin, so they never show on a command line.
+    - The docs page's own client ID is refused; it's stored as a SHA-256 hash.
+  - `api.py`:
+    - Every request carries a bearer token.
+    - 404 becomes `NotFound` (gone or territory-restricted), 403 becomes `Forbidden`, and 401 after a refresh becomes `AuthExpired`.
+    - 429 and 5xx are retried twice, waiting at most 10 s for a Retry-After, then raise `SourceTimeout`.
+  - `source.py`:
+    - `BeatportSource` covers the account's playlists (`my:ID`), curated playlists (`catalog:ID`) and charts (`chart:ID`), and maps Beatport pages onto any offset and limit.
+    - `track_info` copies only the catalog's bpm, Camelot key, genre and sub-genre, length, and `is_available_for_streaming`. Its field names come from public v4 clients, because the docs have no response schemas, so it is the one place to correct after the first real call.
+    - `open_audio` is refused by the policy before any request; even if the policy allowed it, there's no stream code.
+  - `__init__.py`: the policy is `default_policy()` (BROWSE, METADATA, SEND_TO_MODEL) unless `capabilities/beatport.json` exists, in which case that file replaces it and fails closed if malformed. `connect`, `login` and `status` check, in order:
+    1. The policy allows BROWSE. Nothing touches the Keychain or the network before this passes.
+    2. A client ID is set.
+    3. The account is signed in.
+  - `python -m live.sources.beatport`: `set-client`, `login [--no-browser]`, `status`, `playlists`, `tracks LIST [--limit]`, `track ID [--raw]`, `logout`, `forget-client`.
+- `tests/fake_beatport.py` is a local stand-in with:
+  - the documented OAuth endpoints, with PKCE and client-secret checks;
+  - paginated playlists and charts, and catalog tracks;
+  - territory 404s, and tracks that are unstreamable or missing their bpm or key;
+  - switchable 429/5xx answers, expired tokens and revocation.
+- `tests/test_beatport.py` (36 tests) covers:
+  - the gate: a restrictive policy stops everything before the Keychain is touched;
+  - `.env` parsing and precedence;
+  - borrowed client IDs;
+  - sign-in with and without a secret, and forged callbacks;
+  - refresh, both early and on a 401;
+  - revocation and logout;
+  - paging across page boundaries, and the skip reasons;
+  - ids that are rejected before any request;
+  - retries;
+  - no audio;
+  - the command line;
+  - tokens never appearing in a URL.
+  
+  The real Keychain is tested with `DISKO_TEST_KEYCHAIN=1`.
+- Still open:
+  - Check `track_info` against a real response.
+  - Pick Beatport playlists in the app. Without playback a Beatport track can't be loaded on a deck, so there's nothing to DJ yet.
+  - Playback itself (Milestone 2, Branch A or B), once the terms and the stream interface are known.
+
+### Milestone 4: session controller and Hermes
+- `live/session.py`: the set's state machine, taken out of `live/ui/window.py`.
+  - It has no Qt dependency and an explicit owner thread.
+  - Other threads go through `Session.call()`, which queues the command for the owner's next `tick()`.
+  - The window is now a view over it, and `python -m live --headless` runs it with no window.
+- `live/control.py`: local, authenticated control.
+  - It speaks HTTP+JSON over a Unix socket in `~/.disko`. The folder is 0700, and the socket and token file are 0600.
+  - Every request needs a bearer token, which is regenerated at each start. Stale sockets are replaced, a second instance is refused, and requests are handled one at a time.
+  - TCP is off unless `--control-tcp HOST:PORT` is given, and needs the token too.
+  - Commands: `GET /status`, `GET /tracks`, `POST /start`, `/pause`, `/resume`, `/stop`, `/energy`, `/pick-again`.
+  - Status reports only the set's own state, including the sources with their permitted operations and the playback device.
+- `python -m live.ctl` is the command-line client. `python -m live --control` turns control on for the window.
+- `integrations/hermes/disko/` is the Hermes plugin:
+  - `plugin.yaml` and `__init__.py`, standard library only.
+  - Eight tools: `disko_status`, `disko_find_tracks`, `disko_start`, `disko_set_energy`, `disko_pick_again`, `disko_pause`, `disko_resume`, `disko_stop`.
+  - A bundled `disko-dj` skill.
+  - To install, copy the folder to `~/.hermes/plugins/disko` and run `hermes plugins enable disko`.
+  - For Hermes in a container, set `DISKO_CONTROL_URL` and `DISKO_CONTROL_TOKEN`.
+
+### Verification
+- `.venv-live/bin/python -m unittest discover tests` runs 99 tests (one skipped unless DISKO_TEST_KEYCHAIN=1):
+  - ids, policies, deny-before-use, failures, paging
+  - ranking parity and unknowns
+  - the engine on synthetic PCM
+  - the session with a stub Kev (the full autopilot loop, commands, thread ownership, unreadable picks, expiry, disconnect)
+  - the control socket (file permissions, tokens, restart, TCP, serialized requests)
+  - the candidate pool
+  - the Hermes plugin against a running session
+- Also checked by hand:
+  - House-set and playlist snapshots, unchanged after the window refactor.
+  - A Kev-driven snapshot with the real Kev-4B model.
+  - The offscreen window driven end to end over the socket.
+  - `--headless --fake` queried with `live.ctl`.
+- Not exercised: a real Hermes install, and anything involving Beatport.
 
 ## Goal and scope
 

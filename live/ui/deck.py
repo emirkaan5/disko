@@ -124,8 +124,11 @@ class DeckPanel(QFrame):
             self.title.setText(self.empty)
             self.artist.setText("")
             self.bpm.setText("—")
-            for w in (self.bpm_note, self.key_name, self.key_note, self.remain, self.section):
+            for w in (self.bpm_note, self.key_name, self.key_note, self.remain, self.section, self.status):
                 w.setText("")
+            for w in (self.time, self.bar):
+                w.setText("—")
+            self.dots.set(0)
             self.badge.set("")
             return
         t = deck.track
@@ -138,14 +141,20 @@ class DeckPanel(QFrame):
                                        else "native tempo"))
         self.badge.set(t.camelot)
         self.key_name.setText(KEY_NAMES.get(t.camelot, ""))
-        self.key_note.setText(f"confidence {t.key_strength:.2f}")
-        fmt = {"energy": f"{t.energy:.1f}", "mood": f"{t.mood:.1f}", "danceability": f"{t.danceability:.2f}",
-               "busyness": f"{t.busyness:.1f}/s", "brightness": f"{t.brightness / 1000:.1f}k", "vocals": f"{t.vocals:.0%}"}
+        self.key_note.setText("confidence unknown" if t.key_strength is None else f"confidence {t.key_strength:.2f}")
+        fmt = {"energy": "{:.1f}", "mood": "{:.1f}", "danceability": "{:.2f}", "busyness": "{:.1f}/s",
+               "brightness": "{:.1f}k", "vocals": "{:.0%}"}
         for key, m in self.meters.items():
-            m.set(self.library.percentile(t, key), fmt[key])
+            value, pct = getattr(t, key), self.library.percentile(t, key)
+            if key == "brightness" and value is not None:
+                value /= 1000
+            m.set(pct or 0.0, "—" if value is None or pct is None else fmt[key].format(value))
 
     def _mapping_note(self):
-        self.mapping.setText("mapping bars & sections…".upper() if self.deck and not self.deck.track.deep else "")
+        t = self.deck.track if self.deck else None
+        # allin1 only maps local files; anything else plays on the grid it came with
+        note = "" if t is None or t.deep else "mapping bars & sections…" if t.provider == "local" else "rough beat grid"
+        self.mapping.setText(note.upper())
 
     def refresh(self):
         """The track's structure came in (or failed to): redraw the grid and sections."""

@@ -14,6 +14,7 @@ __pycache__/
 # Secrets
 .env
 .env.*
+!.env.example
 
 # Cloned third-party repos (Kev lives at external/kev, cloned from github.com/jaredpalmer/kev)
 external/

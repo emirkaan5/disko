@@ -97,10 +97,12 @@ class CandidateDelegate(QStyledItemDelegate):
         # energy change
         if c:
             d = c.energy_delta
-            arrow, col = ("▲", T.GOOD) if d > 0.15 else ("▼", T.DECK_A) if d < -0.15 else ("●", T.MUTED)
+            arrow, col = (("?", T.MUTED) if d is None else ("▲", T.GOOD) if d > 0.15 else ("▼", T.DECK_A) if d < -0.15
+                          else ("●", T.MUTED))
             p.setFont(T.font(9.5, QFont.Weight.DemiBold, mono=True))
             p.setPen(T.qc(col))
-            p.drawText(QRectF(right - 54, r.top() + 14, 54, 16), Qt.AlignmentFlag.AlignRight, f"{arrow} {d:+.1f}")
+            p.drawText(QRectF(right - 54, r.top() + 14, 54, 16), Qt.AlignmentFlag.AlignRight,
+                       arrow if d is None else f"{arrow} {d:+.1f}")
             p.setFont(T.font(7, QFont.Weight.DemiBold, spacing=1))
             p.setPen(T.qc(T.FAINT))
             p.drawText(QRectF(right - 54, r.top() + 40, 54, 12), Qt.AlignmentFlag.AlignRight, "ENERGY")
@@ -118,7 +120,8 @@ class CandidateDelegate(QStyledItemDelegate):
         p.drawText(badge, Qt.AlignmentFlag.AlignCenter, t.camelot)
         if c:
             p.setFont(T.font(8.5))
-            p.setPen(T.qc(T.GOOD if c.key_score >= 0.85 else T.WARN if c.key_score >= 0.55 else T.BAD))
+            ks = c.key_score
+            p.setPen(T.qc(T.MUTED if ks is None else T.GOOD if ks >= 0.85 else T.WARN if ks >= 0.55 else T.BAD))
             p.drawText(QRectF(right - 90, r.top() + 38, 90, 14), Qt.AlignmentFlag.AlignRight, c.key_label)
         right -= 104
 
@@ -221,8 +224,9 @@ class Browser(QFrame):
         self.refresh()
 
     def refresh(self):
-        if self.current is None:  # sets usually open low and build
-            self.ranked = sorted(self.library.tracks, key=lambda t: t.energy)
+        if self.current is None:  # sets usually open low and build (unknown energies last)
+            self.ranked = sorted((t for t in self.library.tracks if t.mixable),
+                                 key=lambda t: (t.energy is None, t.energy or 0.0))
         else:
             self.ranked = self.library.rank(self.current, self.master_bpm, self.played, self.energy.value())
         self.apply()
@@ -231,11 +235,11 @@ class Browser(QFrame):
         q = self.search.text().strip().lower()
         track = lambda x: x.track if isinstance(x, Candidate) else x
         items = [x for x in self.ranked
-                 if not q or q in f"{track(x).title} {track(x).artist} {track(x).genres}".lower()]
+                 if not q or q in f"{track(x).title} {track(x).artist} {track(x).genres or ''}".lower()]
         sort = self.sort.currentText()
         if self.current is not None and sort != "Best match":
-            key = {"Closest tempo": lambda c: c.deviation, "Best key": lambda c: -c.key_score,
-                   "Most energy": lambda c: -c.track.energy}[sort]
+            key = {"Closest tempo": lambda c: c.deviation, "Best key": lambda c: -(c.key_score or 0.0),
+                   "Most energy": lambda c: (c.track.energy is None, -(c.track.energy or 0.0))}[sort]
             items = sorted(items, key=key)
         elif self.current is None and sort == "Closest tempo":
             items = sorted(items, key=lambda t: t.bpm)
