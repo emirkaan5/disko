@@ -1,0 +1,275 @@
+#!/bin/bash
+# disko: one command for the app, its control client, setup and the Dock app.
+# Runs from this checkout; symlink it onto your PATH if you like:
+#   ln -s "/path/to/disko/bin/disko" ~/.local/bin/disko
+# Works on macOS's stock bash 3.2.
+set -eu
+
+# This script's real location, through any chain of symlinks, so `disko` works from anywhere.
+self=$0
+while [ -h "$self" ]; do
+    dir=$(cd -P "$(dirname "$self")" && pwd)
+    link=$(readlink "$self")
+    case $link in
+        /*) self=$link ;;
+        *) self=$dir/$link ;;
+    esac
+done
+REPO=$(cd -P "$(dirname "$self")/.." && pwd)
+LIVE_PY="$REPO/.venv-live/bin/python"
+
+usage() {
+    cat <<'EOF'
+disko: an AI DJ for your own music.
+
+Usage:
+  disko [app flags...]          open the app (e.g. disko --playlist ~/Music/set)
+  disko headless FOLDER [flags] play FOLDER with no window; Kev DJs, steer it with `disko ctl`
+  disko ctl COMMAND [arg]       control a running disko: status, start ["title"], pause, resume,
+                                stop, pick-again, energy up|hold|down, tracks [query]
+  disko setup [--dry-run] [--upgrade] [--kev-weights]
+                                set up or check the venvs, Kev and the Essentia models
+  disko app [--install]         build dist/disko.app (--install copies it to ~/Applications)
+  disko doctor                  check that everything disko needs is in place
+  disko help                    this text
+
+App flags are passed straight to `python -m live`; `disko --help` lists them.
+EOF
+}
+
+need_live() {
+    if [ ! -x "$LIVE_PY" ]; then
+        echo "disko: the app's environment (.venv-live) is missing; run \`$REPO/bin/disko setup\` first." >&2
+        exit 1
+    fi
+}
+
+run_live() {
+    need_live
+    cd "$REPO"
+    exec "$LIVE_PY" "$@"
+}
+
+# --- doctor -----------------------------------------------------------------------------------
+
+OK="✓"
+NO="✗"
+UNK="?"
+
+doctor() {
+    cd "$REPO"
+    blocking=0     # something the app cannot run without
+    fix_setup=0    # missing pieces that scripts/setup.sh puts in place
+    fix_weights=0  # Kev's weights
+    fix_uv=0
+    fix_mac=0
+    line() { printf '  %s %s\n' "$1" "$2"; }
+
+    echo "disko doctor ($REPO)"
+
+    if [ "$(uname -s)" = Darwin ] && [ "$(sysctl -n hw.optional.arm64 2>/dev/null || echo 0)" = 1 ]; then
+        line "$OK" "Apple Silicon Mac (macOS $(sw_vers -productVersion 2>/dev/null || echo '?'))"
+    else
+        line "$NO" "Apple Silicon Mac: this is $(uname -s) $(uname -m); allin1 and Kev need MLX on Apple Silicon"
+        blocking=1; fix_mac=1
+    fi
+
+    uv=$(command -v uv 2>/dev/null || true)
+    [ -n "$uv" ] || { [ -x "$HOME/.local/bin/uv" ] && uv="$HOME/.local/bin/uv"; } || true
+    if [ -n "$uv" ]; then
+        line "$OK" "uv: $uv ($("$uv" --version 2>/dev/null | awk '{print $2}'))"
+    else
+        line "$NO" "uv: not found on PATH or in ~/.local/bin (the app starts Kev with it)"
+        blocking=1; fix_uv=1
+    fi
+
+    # name|venv|purpose|modules the code imports (checked with find_spec: nothing is imported)
+    for spec in \
+        "live|.venv-live|the app|PySide6 sounddevice pedalboard numba numpy scipy soundfile soxr pandas httpx" \
+        "fast|.venv-essentia-tf|fast pass|essentia numpy" \
+        "audio|.venv-audio|deep pass|allin1_mlx mlx essentia soundfile numpy"; do
+        IFS='|' read -r name venv purpose mods <<EOF
+$spec
+EOF
+        py="$venv/bin/python"
+        if [ ! -x "$py" ]; then
+            line "$NO" "$venv ($purpose): missing"
+            blocking=1; fix_setup=1
+            continue
+        fi
+        # shellcheck disable=SC2086 # $mods is a word list on purpose
+        missing=$("$py" -I -c 'import importlib.util, sys
+print(" ".join(m for m in sys.argv[1:] if importlib.util.find_spec(m) is None))' $mods 2>/dev/null) \
+            || missing="(python does not start)"
+        if [ -z "$missing" ]; then
+            line "$OK" "$venv ($purpose): $("$py" -V 2>&1)"
+        else
+            line "$NO" "$venv ($purpose): missing $missing (requirements/$name.txt)"
+            blocking=1; fix_setup=1
+        fi
+    done
+
+    if [ -f external/kev/pyproject.toml ]; then
+        line "$OK" "Kev: external/kev"
+        if [ -x external/kev/.venv/bin/python ]; then
+            line "$OK" "Kev's environment: external/kev/.venv"
+        else
+            line "$NO" "Kev's environment: external/kev/.venv missing (uv would build it on first start)"
+            fix_setup=1
+        fi
+    else
+        line "$NO" "Kev: external/kev missing (github.com/jaredpalmer/kev)"
+        blocking=1; fix_setup=1
+    fi
+
+    kev_weights
+
+    models="data/house/models/essentia"
+    nmissing=0
+    for m in discogs-effnet-bs64-1 msd-musicnn-1 genre_discogs400-discogs-effnet-1 \
+             danceability-discogs-effnet-1 voice_instrumental-discogs-effnet-1 emomusic-msd-musicnn-2; do
+        for ext in pb json; do
+            if [ -s "$models/$m.$ext" ]; then
+                line "$OK" "Essentia model: $m.$ext"
+            else
+                line "$NO" "Essentia model: $m.$ext missing from $models/"
+                nmissing=$((nmissing + 1))
+            fi
+        done
+    done
+    if [ "$nmissing" -gt 0 ]; then blocking=1; fix_setup=1; fi
+
+    ffmpeg=$(command -v ffmpeg 2>/dev/null || true)
+    [ -n "$ffmpeg" ] || { [ -x /opt/homebrew/bin/ffmpeg ] && ffmpeg=/opt/homebrew/bin/ffmpeg; } || true
+    if [ -n "$ffmpeg" ]; then
+        line "$OK" "ffmpeg: $ffmpeg (for AAC/M4A files and Beatport streams)"
+    else
+        line "$UNK" "ffmpeg: not found; optional, only AAC/M4A files and Beatport streams need it (brew install ffmpeg)"
+    fi
+
+    control="${DISKO_CONTROL_DIR:-$HOME/.disko}/control.sock"
+    if [ -S "$control" ]; then
+        line "$OK" "control socket: $control (a disko is running or exited uncleanly)"
+    else
+        line "-" "control socket: $control (created while disko runs)"
+    fi
+
+    for app in "$HOME/Applications/disko.app" "$REPO/dist/disko.app"; do
+        [ -d "$app" ] || continue
+        baked=$(cat "$app/Contents/Resources/checkout" 2>/dev/null || true)
+        if [ "$baked" = "$REPO" ]; then
+            line "$OK" "app: $app"
+        else
+            line "$NO" "app: $app points at ${baked:-an unknown checkout}; rebuild it with \`bin/disko app --install\`"
+        fi
+    done
+    if [ ! -d "$HOME/Applications/disko.app" ]; then
+        line "-" "app: not in ~/Applications (bin/disko app --install puts it there)"
+    fi
+
+    echo
+    if [ "$blocking" = 0 ]; then
+        echo "disko can run: bin/disko"
+    else
+        echo "disko can't run yet."
+    fi
+    if [ "$fix_mac" = 1 ]; then
+        echo "disko needs an Apple Silicon Mac; nothing else will fix that."
+    elif [ "$fix_uv" = 1 ]; then
+        echo "Fix: install uv (curl -LsSf https://astral.sh/uv/install.sh | sh), then run bin/disko setup"
+    elif [ "$fix_setup" = 1 ] && [ "$fix_weights" = 1 ]; then
+        echo "Fix: bin/disko setup --kev-weights"
+    elif [ "$fix_setup" = 1 ]; then
+        echo "Fix: bin/disko setup"
+    elif [ "$fix_weights" = 1 ]; then
+        echo "Fix: bin/disko setup --kev-weights"
+    fi
+    return "$blocking"
+}
+
+# Kev's weights in the Hugging Face cache: the run (adapter) and the base model it names.
+kev_weights() {
+    run="${KEV_RUN:-jaredpalmer/kev-4b}"
+    if [ -n "${KEV_URL:-}" ] && [ "$KEV_URL" != "http://127.0.0.1:8009" ]; then
+        line "$UNK" "Kev's weights: unknown (KEV_URL=$KEV_URL, a server disko doesn't start)"
+        return 0
+    fi
+    if [ -d "$run" ] || [ -d "external/kev/$run" ]; then
+        line "$UNK" "Kev's weights: unknown (KEV_RUN=$run is a local checkpoint)"
+        return 0
+    fi
+    case $run in
+        */*) ;;
+        *) line "$UNK" "Kev's weights: unknown (KEV_RUN=$run)"; return 0 ;;
+    esac
+    hub="${HF_HUB_CACHE:-${HF_HOME:-$HOME/.cache/huggingface}/hub}"
+    repo=${run%%@*}
+    snap=$(cached_snapshot "$hub" "$repo")
+    if [ -z "$snap" ]; then
+        line "$NO" "Kev's weights: $repo not in $hub"
+        blocking=1; fix_weights=1
+        return 0
+    fi
+    base=$(sed -n 's/^ *"base": *"\([^"]*\)".*/\1/p' "$snap/provenance.json" 2>/dev/null | head -n 1)
+    rev=$(sed -n 's/^ *"base_revision": *"\([0-9a-f]\{40\}\)".*/\1/p' "$snap/provenance.json" 2>/dev/null | head -n 1)
+    if [ -z "$base" ]; then
+        line "$UNK" "Kev's weights: $repo is cached; its base model: unknown"
+    elif [ -n "$(cached_snapshot "$hub" "$base" "$rev")" ]; then
+        line "$OK" "Kev's weights: $repo and its base $base${rev:+ @${rev%"${rev#???????}"}} (cached)"
+    else
+        line "$NO" "Kev's weights: $repo is cached but its base $base${rev:+ @${rev%"${rev#???????}"}} is not"
+        blocking=1; fix_weights=1
+    fi
+}
+
+# A snapshot of a Hub repo in the cache that holds .safetensors files (the given commit's, if
+# one is given), or nothing.
+cached_snapshot() {
+    d="$1/models--$(printf '%s' "$2" | sed 's#/#--#g')/snapshots"
+    [ -d "$d" ] || return 0
+    if [ -n "${3:-}" ]; then set -- "$d/$3"; else set -- "$d"/*; fi
+    for s in "$@"; do
+        if ls "$s"/*.safetensors >/dev/null 2>&1; then
+            printf '%s\n' "$s"
+            return 0
+        fi
+    done
+}
+
+# --- dispatch ---------------------------------------------------------------------------------
+
+cmd="${1:-}"
+case $cmd in
+    help|-h|--usage)
+        usage
+        ;;
+    doctor)
+        shift
+        doctor
+        ;;
+    setup)
+        shift
+        exec /bin/bash "$REPO/scripts/setup.sh" "$@"
+        ;;
+    app)
+        shift
+        exec /bin/bash "$REPO/scripts/make_app.sh" "$@"
+        ;;
+    ctl)
+        shift
+        run_live -m live.ctl "$@"
+        ;;
+    headless)
+        shift
+        if [ $# -lt 1 ] || [ -z "$1" ]; then
+            echo "usage: disko headless FOLDER [flags]" >&2
+            exit 2
+        fi
+        folder=$1
+        shift
+        run_live -m live --headless --playlist "$folder" "$@"
+        ;;
+    *)
+        run_live -m live "$@"
+        ;;
+esac

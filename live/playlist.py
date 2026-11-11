@@ -189,6 +189,8 @@ class Playlist:
         self.tracks = []  # set by load()
         self.fast = {}    # id -> fast-pass results
         self._lock = threading.Lock()
+        from .sources.local import LocalSource
+        self.source = LocalSource(self)
 
     @property
     def name(self) -> str:
@@ -230,10 +232,14 @@ class Playlist:
             self.fast[f.id] = d
             tags = d.get("tags", {})
             title, artist = (tags.get("title") or "").strip(), (tags.get("artist") or "").strip()
+            named = "file tags" if title else "file name"
             if not title:
                 title, guessed = guess_names(f.rel)
                 artist = artist or guessed
-            t = Track(uid=f.id, path=f.path, title=title or "Untitled", artist=artist or "Unknown artist",
+            t = Track(uid=f.id, path=f.path, source=self.source,
+                      provenance={"title": named, "features": f"fast pass v{FAST_VERSION}",
+                                  "vocals": "guessed from the voice model"},
+                      title=title or "Untitled", artist=artist or "Unknown artist",
                       bpm=d["bpm"] or 120.0, camelot=camelot(d["key"], d["scale"]), key_strength=d["key_strength"],
                       energy=d["arousal"], mood=d["valence"], danceability=d["danceability"],
                       loudness=d["loudness_short_term_mean"], busyness=d["onset_rate"],
@@ -251,6 +257,7 @@ class Playlist:
         if a is None or st is None or len(a.get("downbeats", [])) < 2:
             return False
         t.set_structure(grid_file=self.analysis / f"{t.uid}.allin1.json", **structure(a, st, self.fast[t.uid]["bpm"]))
+        t.provenance.update(structure="allin1", vocals="stems")
         return True
 
     def add_structure(self, t: Track) -> bool:

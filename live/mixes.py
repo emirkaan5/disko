@@ -417,20 +417,22 @@ class Suggestion:
 def recommend(a: Track, b: Track, master_bpm: float) -> Suggestion:
     factor, dev = tempo_match(master_bpm, b.bpm)
     k, label = key_relation(a.camelot, b.camelot)
-    lift = b.energy - a.energy
-    vocal_clash = a.vocals > 0.1 and b.vocals > 0.1 and a.vocals_out_bars < 8 and b.vocals_in_bars < 8
+    lift = 0.0 if a.energy is None or b.energy is None else b.energy - a.energy  # unknown: no lift either way
+    sings = lambda t: (t.vocals or 0) > 0.1  # unknown vocals: nothing to clash with as far as anyone knows
+    vocal_clash = sings(a) and sings(b) and a.vocals_out_bars < 8 and b.vocals_in_bars < 8
     reasons = [
         ("good" if dev <= 0.04 else "warn" if dev <= MAX_STRETCH else "bad",
          f"{master_bpm:.1f} → {b.bpm:.1f} BPM ({(factor - 1) * 100:+.1f}%)"),
         ("good" if k >= 0.85 else "warn" if k >= 0.55 else "bad", f"{a.camelot} → {b.camelot}: {label}"),
-        ("info", f"Energy {a.energy:.1f} → {b.energy:.1f} ({lift:+.1f})"),
+        ("info", f"Energy {a.energy:.1f} → {b.energy:.1f} ({lift:+.1f})" if a.energy is not None and b.energy is not None
+         else "Energy unknown for one of them"),
         ("good" if b.bass_in_bars >= 8 else "info", f"B's bass enters after {b.bass_in_bars} bars"),
     ]
 
     def pick(key, tone, why, sync=True, **params):
         return Suggestion(key, {**TECHNIQUES[key].defaults(), **params}, sync, reasons + [(tone, why)])
 
-    sung_out = a.vocals > 0.1 and a.vocals_out_bars < 4  # an echo would repeat A's last words; a wash blurs them
+    sung_out = sings(a) and a.vocals_out_bars < 4  # an echo would repeat A's last words; a wash blurs them
     if dev > MAX_STRETCH:
         if lift > 0.3 and b.first_drop_bar:
             return pick("drop_cut", "info", "Too far apart to beatmatch, and B lifts the energy: cut into its drop", sync=False)
@@ -550,7 +552,7 @@ def mix_out_points(a: Deck, now: int, technique: str, params: dict, lead_beats: 
         picks += [("Next phrase", phrase), ("Phrase after", t.phrase_after(phrase + 1, last))]
     if t.outro_bars:
         picks.append(("Outro starts", t.phrase_near(n - t.outro_bars + 1, first, last)))
-    if t.vocals > 0.05 and t.vocals_out_bars:
+    if (t.vocals or 0) > 0.05 and t.vocals_out_bars:
         picks.append(("Vocals end", t.phrase_after(n - t.vocals_out_bars + 1, last)))
     picks.append(("Latest", t.phrase_before(last, first) or last))
     seen = {}

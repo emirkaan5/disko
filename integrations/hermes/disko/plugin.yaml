@@ -1,0 +1,14 @@
+name: disko
+version: 0.1.0
+description: Steer a disko AI DJ set running on this Mac — start, status, energy, pick again, pause, stop
+author: disko
+license: AGPL-3.0
+provides_tools:
+  - disko_status
+  - disko_find_tracks
+  - disko_start
+  - disko_set_energy
+  - disko_pick_again
+  - disko_pause
+  - disko_resume
+  - disko_stop

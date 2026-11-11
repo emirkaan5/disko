@@ -1,0 +1,6 @@
+# .venv-essentia-tf: the fast pass (live/workers/fast.py). essentia-tensorflow clashes with plain
+# essentia, hence its own venv. Installed by scripts/setup.sh:
+#   uv venv .venv-essentia-tf --python 3.14 && uv pip install --python .venv-essentia-tf -r requirements/fast.txt
+# Only pre-release builds of essentia-tensorflow exist for Python 3.14, so the floor names one.
+essentia-tensorflow>=2.1b6.dev1438,<3
+numpy>=2.5,<3

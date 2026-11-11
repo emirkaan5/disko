@@ -14,6 +14,7 @@ __pycache__/
 # Secrets
 .env
 .env.*
+!.env.example
 
 # Cloned third-party repos (Kev lives at external/kev, cloned from github.com/jaredpalmer/kev)
 external/
@@ -40,3 +41,6 @@ results/live/
 
 # Live app snapshots
 out.png
+
+# The macOS app bundle (scripts/make_app.sh)
+dist/

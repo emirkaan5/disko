@@ -1,0 +1,15 @@
+# .venv-audio: the deep pass (live/workers/deep.py, allin1's MLX port) and the house-set scripts
+# (scripts/house/). Installed by scripts/setup.sh:
+#   uv venv .venv-audio --python 3.14 && uv pip install --python .venv-audio -r requirements/audio.txt
+all-in-one-mlx>=1.0,<2
+mlx>=0.32,<1
+demucs>=4.1,<5
+essentia>=2.1b6.dev1438,<3
+librosa>=1.0,<2
+numpy>=2.5,<3
+soundfile>=0.14,<1
+# scripts/house/ only
+pandas>=3.0,<4
+mutagen>=1.48,<2
+remotezip>=0.12,<1
+requests>=2.34,<3

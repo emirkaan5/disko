@@ -17,6 +17,10 @@ from pathlib import Path
 
 from .library import Track
 from .playlist import Playlist
+from .sources import Operation, PolicyDenied, require
+
+# allin1 reads the file, writes its results next to the music and temporary stem WAVs along the way
+DEEP_OPERATIONS = (Operation.DECODE, Operation.ANALYZE, Operation.PERSIST_ANALYSIS, Operation.PERSIST_AUDIO)
 
 REPO = Path(__file__).resolve().parent.parent
 WORKERS = REPO / "live" / "workers"
@@ -135,6 +139,13 @@ class DeepAnalyzer:
             if track.uid in self._futures:
                 return self._futures[track.uid]
             future = Future()
+            try:  # asked before anything is sent to the helper: a denied track is never read or written
+                require(track, *DEEP_OPERATIONS)
+                if track.provider != "local" or track.path is None:
+                    raise PolicyDenied(track.provider, Operation.ANALYZE, "allin1 only reads local files", track.id)
+            except PolicyDenied as e:
+                future.set_exception(e)
+                return future
             try:
                 self._spawn()
                 self.proc.stdin.write(json.dumps({"id": track.uid, "path": str(track.path),

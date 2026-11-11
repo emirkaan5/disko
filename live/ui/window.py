@@ -12,13 +12,14 @@ from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QMainWindow, QPushBu
                                QStackedWidget, QVBoxLayout, QWidget)
 
 from ..audio import SR, Deck, load_deck, sync_ratio
-from ..dj import KevDJ
 from ..engine import Engine
 from ..indexer import DeepAnalyzer
 from ..kev import Kev
 from ..library import MAX_STRETCH, Library, Track, tempo_match
 from .. import mixes
 from ..mixes import LANE_DEFAULTS, TECHNIQUES, Plan, Scheduled, build
+from ..session import Session, SessionError
+from ..sources import PolicyDenied
 from . import theme as T
 from .booth import Booth
 from .browser import Browser
@@ -189,21 +190,14 @@ class MainWindow(QMainWindow):
         self.library, self.engine, self.analyzer = library, engine, analyzer
         self.pool = pool or ThreadPoolExecutor(max_workers=3)
         self.kev = kev or Kev()
-        self.dj = KevDJ(library, self.kev, prepare, prepare_synced, structure=self._structure)
-        self.autopilot = True       # Kev DJs; off = you pick and plan every mix
+        # The set itself (what plays, what's queued, Kev's decisions) lives in the session; this
+        # window owns it (it runs on the UI thread) and is a view over it, plus the hand-DJ planner.
+        self.session = Session(library, engine, self.kev, prepare, prepare_synced, pool=self.pool, analyzer=analyzer)
+        self.session.on(self._event)
+        self.dj = self.session.dj
         self.kev_ready = False
         self.b_view = None          # the deck B panel showing the queued/playing mix
-        self.images = {}            # uid -> WaveImage
-        self.current: Deck | None = None
-        self.played = []
-        self.mixes = []  # the set's transitions so far, as Plans
-        self.state = "start"        # start, playing, planning, queued, mixing, ended
         self.b_native = self.b_synced = None
-        self.scheduled: Scheduled | None = None
-        self.jobs = []
-        self._token = 0             # bumps when the user changes their mind; stale jobs are dropped
-        self.set_seconds = 0.0
-        self._last = time.monotonic()
         self._ticks = 0
 
         root = QWidget()
@@ -268,87 +262,65 @@ class MainWindow(QMainWindow):
         self.timer.timeout.connect(self.tick)
         self.timer.start(16)
 
-    # ------------------------------------------------------------ background work
+    # ------------------------------------------------------------ the session's state, read-only here
+
+    current = property(lambda self: self.session.current)
+    played = property(lambda self: self.session.played)
+    mixes = property(lambda self: self.session.mixes)
+    scheduled = property(lambda self: self.session.scheduled)
+    state = property(lambda self: self.session.state)
+    autopilot = property(lambda self: self.session.autopilot)
+    images = property(lambda self: self.session.extras)  # uid -> WaveImage
+
+    # ------------------------------------------------------------ background work (the hand-DJ planner)
 
     def _submit(self, fn, *args, then):
-        self.jobs.append((self.pool.submit(fn, *args), then, self._token))
+        self.session.submit(fn, *args, then=then, failed=self._job_failed)
 
-    def _poll_jobs(self):
-        done = [j for j in self.jobs if j[0].done()]
-        for job in done:
-            self.jobs.remove(job)
-            future, then, token = job
-            if token != self._token:
-                continue
-            try:
-                result = future.result()
-            except Exception as e:  # a broken file or a failed render shouldn't take the set down
-                self.toast.show_message(f"Couldn't do that: {e}", "bad")
-                if self.state == "planning":
-                    self.planner.tick(self.engine.snapshot().pos)
-                continue
-            then(result)
+    def _job_failed(self, e):
+        self.toast.show_message(f"Couldn't do that: {e}", "bad")
+        if self.state == "planning":
+            self.planner.tick(self.engine.snapshot().pos)
 
     # ------------------------------------------------------------ actions
 
     def toggle_play(self):
         if self.current is not None:
-            self.engine.toggle()
+            try:
+                self.session.toggle()
+            except SessionError as e:
+                self.toast.show_message(str(e), "warn")
 
     def _volume(self, v: float):
         self.engine.volume = v
 
     def _seek(self, frac: float):
-        if self.current is None or self.state == "mixing":
-            return
-        target = int(frac * self.current.length)
-        if self.engine.seek(target):
-            return
-        if self.scheduled is not None and self.engine.cancel():  # jumped past the queued mix: plan a new one
-            self.scheduled = None
-            self.state = "playing"
-            self.left.set_transition()
-            self.engine.seek(target)
-            if self.autopilot:
-                self.booth.log("You skipped past the mix — Kev plans a new one")
-                self._kev_think()
-            else:
-                self.right.setCurrentWidget(self.browser)
+        self.session.seek(frac)
 
     def _skip_to_mix(self):
-        """Jump to a few bars before the queued transition, to hear it now."""
-        s = self.scheduled
-        if s is not None and self.state == "queued":
-            self.engine.seek(max(int(s.start - 8 * s.spb), self.engine.snapshot().pos))
-
-    def _structure(self, track: Track) -> float:
-        """Block until allin1 has mapped the track (background threads only)."""
-        if track.deep or self.analyzer is None:
-            return 0.0
-        return self.analyzer.analyze(track).result()
+        self.session.skip_to_mix()
 
     def _picked(self, track: Track):
-        if self.current is None or self.state == "ended":
-            self._token += 1
-            if self.analyzer is not None and not track.deep:  # map it while it plays; Kev's plan waits for it
-                self.analyzer.analyze(track)
-            self.toast.show_message(f"Loading “{track.title}”…")
-            self._submit(prepare, track, 1.0, then=self._opened)
+        if self.current is None or self.state in ("ended", "stopped"):
+            try:
+                self.session.open(track)
+            except (SessionError, PolicyDenied) as e:
+                self.toast.show_message(str(e), "bad")
             return
         if self.state not in ("playing", "planning"):
             return
         a = self.current
         if self.analyzer is not None and not (a.track.deep and track.deep):  # the planner needs both mapped
-            self._token += 1
+            self.session.bump()
             self.browser.heading.setText(f"Mapping “{track.title}”: bars, sections and stems…")
             self.toast.show_message(f"Mapping “{track.title}” before planning the mix, about 15 s…")
-            self._submit(lambda: (self._structure(a.track), self._structure(track)), then=lambda _: self._picked(track))
+            self._submit(lambda: (self.session.structure(a.track), self.session.structure(track)),
+                         then=lambda _: self._picked(track))
             return
-        self._token += 1
+        self.session.begin_planning()
         self.b_native = self.b_synced = None
         self.planner.open(a, self.images[a.track.uid], track, self.engine.snapshot().pos)
         self.right.setCurrentWidget(self.planner)
-        self.state = "planning"
         self._submit(prepare, track, 1.0, then=self._b_native_ready)
         if tempo_match(a.bpm, track.bpm)[1] <= MAX_STRETCH:
             self._submit(prepare_synced, track, a.period, then=self._b_synced_ready)
@@ -363,107 +335,17 @@ class MainWindow(QMainWindow):
         self.images.setdefault(self.b_synced.track.uid, image)
         self.planner.set_b(self.b_native, self.b_synced, self.images[self.b_synced.track.uid])
 
-    def _opened(self, result):
-        deck, image = result
-        self.images[deck.track.uid] = image
-        self.current = deck
-        self.engine.load(deck)
-        self.engine.play()
-        self.played.append(deck.track.uid)
-        self.history.add_track(len(self.played), deck.track)
-        self.left.set_deck(deck, image)
-        self.left.set_transition()
-        self.state = "playing"
-        self._next_step()
-
-    def _next_step(self):
-        """After a track starts: Kev decides what follows, or the list waits for you."""
-        if self.autopilot:
-            self.right.setCurrentWidget(self.kev_page)
-            self._kev_think()
-        else:
-            self.right.setCurrentWidget(self.browser)
-            self.browser.show_next(self.current.track, self.current.bpm, set(self.played))
-
-    # ------------------------------------------------------------ Kev at the decks
-
-    def _kev_think(self, avoid=()):
-        if self.current is None or self.scheduled is not None:
-            return
-        self.kev_deck.set_deck(None, None)
-        self.booth.begin()
-        recent = [self.library.by_uid[u] for u in self.played]
-        self.dj.think(self.current, lambda: self.engine.snapshot().pos, self.played, recent,
-                      self.set_seconds / 60, avoid, self.mixes)
-
     def _set_autopilot(self, on: bool):
-        self.autopilot = on
-        if self.current is None:
-            return
-        if on:
-            if self.scheduled is None and self.state in ("playing", "planning"):
-                self.state = "playing"
-                self._next_step()
-        else:
-            self.dj.cancel()  # a mix Kev already queued still plays; only its next decisions stop
-            if self.scheduled is None:
-                self.right.setCurrentWidget(self.browser)
-                self.browser.show_next(self.current.track, self.current.bpm, set(self.played))
+        self.session.set_autopilot(on)
 
     def _kev_repick(self):
-        if not self.autopilot or self.current is None or self.state == "mixing":
-            return
-        avoid = set()
-        if self.scheduled is not None and self.engine.cancel():
-            avoid.add(self.scheduled.deck.track.uid)
-            self.scheduled = None
-            self.state = "playing"
-            self.left.set_transition()
-        self.booth.log("You asked Kev for another pick")
-        self._kev_think(avoid)
+        self.session.repick()
 
     def _kev_lift(self, lift: int):
-        self.dj.lift = lift
-        if self.autopilot and self.scheduled is None and self.current is not None:
-            self._kev_think()  # rethink with the new direction
-
-    def _drain_dj(self):
-        while True:
-            try:
-                kind, data = self.dj.events.get_nowait()
-            except queue.Empty:
-                return
-            self.booth.handle(kind, data)
-            if kind == "ready" and self.autopilot:
-                s = data["scheduled"]
-                self.images[s.deck.track.uid] = data["image"]
-                self._rendered(s)
-            elif kind == "exhausted":
-                self.toast.show_message("That's every track in the playlist — this one closes the set", "warn")
-            elif kind == "error" and self.autopilot:
-                self.toast.show_message("Kev hit a problem — trying again", "bad")
-                QTimer.singleShot(3000, lambda: self.scheduled is None and self._kev_think())
-
-    def _drain_analyzer(self):
-        """allin1 finished a track: if it's playing, switch its deck to the real bars and sections."""
-        while self.analyzer is not None:
-            try:
-                kind, track, info = self.analyzer.events.get_nowait()
-            except queue.Empty:
-                return
-            playing = self.current is not None and self.current.track is track
-            if kind == "analyzed":
-                if playing:
-                    self.current.reset_grid()
-                    self.left.refresh()
-                self.browser.view.viewport().update()
-            elif kind == "failed" and playing:
-                self.toast.show_message(f"Couldn't map “{track.title}” — mixing by its rough beat grid", "warn")
-                self.left.refresh()
+        self.session.set_lift(lift)
 
     def _back(self):
-        self._token += 1
-        self.state = "playing"
+        self.session.end_planning()
         self.right.setCurrentWidget(self.browser)
 
     def _escape(self):
@@ -476,26 +358,86 @@ class MainWindow(QMainWindow):
             return
         self.planner.go.setEnabled(False)
         self.planner.status.setText("Rendering the transition…")
-        self._submit(build, plan, self.current, b, then=self._rendered)
+        self._submit(build, plan, self.current, b, then=self.session.schedule)
 
-    def _rendered(self, s: Scheduled):
-        if self.state == "ended":  # the track ran out before the mix was ready: just start the next one
-            self.engine.load(s.deck, max(s.b_offset + int(s.auto.b_start * s.spb), 0))
-            self.engine.play()
-            self.scheduled = s
-            self._promote()
-            return
-        if not self.engine.schedule(s):
+    def _cancel_mix(self):
+        self.session.cancel_mix()
+
+    # ------------------------------------------------------------ what the session says happened
+
+    def _event(self, kind: str, data: dict):
+        handler = getattr(self, f"_on_{kind}", None)
+        if handler is not None:
+            handler(**data)
+
+    def _on_loading(self, track):
+        self.toast.show_message(f"Loading “{track.title}”…")
+
+    def _on_open_failed(self, track, error):
+        self.toast.show_message(f"Couldn't open “{track.title}”: {error}", "bad")
+
+    def _on_job_failed(self, error):
+        self._job_failed(error)
+
+    def _on_opened(self, deck, extra):
+        self.history.add_track(len(self.played), deck.track)
+        self.left.set_deck(deck, extra)
+        self.left.set_transition()
+
+    def _on_next(self, autopilot):
+        if autopilot:
+            self.right.setCurrentWidget(self.kev_page)
+        else:
+            self.right.setCurrentWidget(self.browser)
+            self.browser.show_next(self.current.track, self.current.bpm, set(self.played))
+
+    def _on_thinking(self):
+        self.kev_deck.set_deck(None, None)
+        self.booth.begin()
+
+    def _on_autopilot(self, on):
+        if not on and self.scheduled is None:
+            self.right.setCurrentWidget(self.browser)
+            self.browser.show_next(self.current.track, self.current.bpm, set(self.played))
+
+    def _on_repick(self):
+        self.booth.log("You asked Kev for another pick")
+
+    def _on_mix_dropped(self, reason):
+        self.left.set_transition()
+        if reason == "seek":
             if self.autopilot:
-                self.booth.log("Missed the bar while deciding — Kev rethinks", "warn")
-                self._kev_think()
+                self.booth.log("You skipped past the mix — Kev plans a new one")
             else:
-                self.toast.show_message("Missed that bar — pick a later mix-out point", "warn")
-                self.planner.tick(self.engine.snapshot().pos)
-            return
-        self.scheduled = s
-        self.state = "queued"
-        mixes.log(s.report)
+                self.right.setCurrentWidget(self.browser)
+
+    def _on_dj(self, kind, data):
+        self.booth.handle(kind, data)
+        if kind == "exhausted":
+            self.toast.show_message("That's every track in the playlist — this one closes the set", "warn")
+        elif kind == "skipped":
+            self.booth.log(data["text"] + " — Kev picks again", "warn")
+        elif kind == "error" and self.autopilot:
+            self.toast.show_message("Kev hit a problem — trying again", "bad")
+
+    def _on_analysis(self, kind, track, playing):
+        if kind == "analyzed":
+            if playing:
+                self.left.refresh()
+            self.browser.view.viewport().update()
+        elif kind == "failed" and playing:
+            self.toast.show_message(f"Couldn't map “{track.title}” — mixing by its rough beat grid", "warn")
+            self.left.refresh()
+
+    def _on_missed(self, autopilot):
+        if autopilot:
+            self.booth.log("Missed the bar while deciding — Kev rethinks", "warn")
+        else:
+            self.toast.show_message("Missed that bar — pick a later mix-out point", "warn")
+            self.planner.tick(self.engine.snapshot().pos)
+
+    def _on_queued(self, scheduled):
+        s = scheduled
         self.b_view = self.kev_deck if self.autopilot else self.incoming
         self.b_view.set_deck(s.deck, self.images[s.deck.track.uid],
                              note=f"synced from {s.deck.bpm / s.deck.ratio:.1f}" if s.plan.sync and abs(s.deck.ratio - 1) > 5e-4 else "")
@@ -513,23 +455,15 @@ class MainWindow(QMainWindow):
             self.booth.log(f"Queued {s.plan.tech.name.lower()} for bar {s.plan.out_bar} of “{self.current.track.title}”")
             self.booth.log(mixes.describe(s.report), "info" if s.report["out_on_phrase"] and s.report["in_on_phrase"] else "warn")
 
-    def _cancel_mix(self):
-        if self.scheduled is not None and self.engine.cancel():
-            self.scheduled = None
-            self.state = "planning"
-            self.cancel.hide()
-            self.left.set_transition()
-            self.right.setCurrentWidget(self.planner)
-            self.planner.tick(self.engine.snapshot().pos)
-
-    def _promote(self):
-        """The transition finished: deck B is now the one playing."""
-        s = self.scheduled
-        self.scheduled = None
+    def _on_mix_cancelled(self):
         self.cancel.hide()
-        self.current = s.deck
-        self.played.append(s.deck.track.uid)
-        self.mixes.append(s.plan)
+        self.left.set_transition()
+        self.right.setCurrentWidget(self.planner)
+        self.planner.tick(self.engine.snapshot().pos)
+
+    def _on_promoted(self, scheduled):
+        s = scheduled
+        self.cancel.hide()
         self.history.add_mix(s.plan)
         self.history.add_track(len(self.played), s.deck.track)
         self.left.set_deck(s.deck, self.images[s.deck.track.uid])
@@ -538,45 +472,39 @@ class MainWindow(QMainWindow):
             self.b_view.set_deck(None, None)
         self.b_view = None
         self.b_native = self.b_synced = None
-        self.state = "playing"
         if self.autopilot:
             self.booth.log(f"Now playing “{s.deck.track.title}” — Kev picks what follows")
-        self._next_step()
+
+    def _on_ended(self, autopilot):
+        if autopilot:  # Kev's pick starts the moment it is ready
+            self.booth.log("The track ran out before the mix was ready", "warn")
+        else:
+            self.right.setCurrentWidget(self.browser)
+            self.toast.show_message("Track ended — pick the next one to start it", "warn")
+
+    def _on_stopped(self, reason):
+        self.cancel.hide()
+        self.left.set_transition()
+        if self.b_view is not None:
+            self.b_view.set_deck(None, None)
+        self.b_view = None
+        self.booth.log(f"Set stopped: {reason}", "warn")
+        self.toast.show_message(f"Set stopped: {reason}", "warn")
+
+    def _on_source_lost(self, reason):
+        self.toast.show_message(f"Lost access to the music: {reason}", "bad")
 
     # ------------------------------------------------------------ the 60 fps loop
 
     def tick(self):
-        self._poll_jobs()
-        self._drain_dj()
-        self._drain_analyzer()
+        snap = self.session.tick()
         if not self.kev_ready and self.kev.info:
             self.kev_ready = True
             self.booth.handle("model", {"name": self.kev.name})
             if self.current is None:
                 self.booth.set_status("Kev is ready — pick an opening track", "good")
-        now = time.monotonic()
-        dt, self._last = now - self._last, now
         self._ticks += 1
-        snap = self.engine.snapshot()
-        if snap.playing:
-            self.set_seconds += dt
         s = self.scheduled
-        if s is not None:
-            if snap.sched is s:
-                self.state = "mixing"
-            elif snap.sched is None and snap.deck is s.deck:
-                self._promote()
-                snap = self.engine.snapshot()
-                s = None
-        if (self.current is not None and s is None and not snap.playing and self.state in ("playing", "planning")
-                and snap.pos >= self.current.length - SR // 5):
-            self.state = "ended"
-            self._token += 1
-            if self.autopilot:  # Kev's pick starts the moment it is ready
-                self.booth.log("The track ran out before the mix was ready", "warn")
-            else:
-                self.right.setCurrentWidget(self.browser)
-                self.toast.show_message("Track ended — pick the next one to start it", "warn")
 
         if self.current is not None:
             self.left.set_position(snap.pos)
@@ -621,7 +549,8 @@ class MainWindow(QMainWindow):
                       "playing": ("playing", "Playing", "Kev is choosing what's next" if self.autopilot
                                   else "Pick what comes next"),
                       "planning": ("planning", "Planning a mix", "Choose a mix, then Start"),
-                      "ended": ("stopped", "Track ended", "Pick the next track")}.get(self.state)
+                      "ended": ("stopped", "Track ended", "Pick the next track"),
+                      "stopped": ("stopped", "Set stopped", "Pick a track to start again")}.get(self.state)
             if status:
                 self.mixer.set_info(*status)
             if self.current is not None:
@@ -635,12 +564,13 @@ class MainWindow(QMainWindow):
         if self.state == "planning" and self._ticks % 30 == 0:
             self.planner.tick(snap.pos)
         status = {"start": "Pick a track", "playing": "Playing", "planning": "Planning", "queued": "Mix queued",
-                  "mixing": "Mixing", "ended": "Stopped"}[self.state]
-        self.top.set(snap.playing, self.current.bpm if self.current else None, self.set_seconds, len(self.played), status)
+                  "mixing": "Mixing", "ended": "Stopped", "stopped": "Stopped"}[self.state]
+        self.top.set(snap.playing, self.current.bpm if self.current else None, self.session.set_seconds,
+                     len(self.played), status)
 
     def closeEvent(self, e):
         self.timer.stop()
-        self.dj.cancel()
+        self.session.close()
         self.engine.close()
         if self.analyzer is not None:
             self.analyzer.close()

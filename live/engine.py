@@ -87,6 +87,16 @@ class Engine:
             self.pending = None
             return True
 
+    @property
+    def output_name(self) -> str | None:
+        """The sound output playing the set; None without a sound card (tests, snapshots)."""
+        if self.stream is None:
+            return None
+        try:
+            return sd.query_devices(self.stream.device)["name"]
+        except Exception:
+            return "the default output"
+
     def close(self):
         if self.stream:
             self.stream.stop()
