@@ -12,6 +12,11 @@ Runs in the essentia-tensorflow venv, which clashes with the app's packages, one
     .venv-essentia-tf/bin/python live/workers/fast.py --jobs jobs.json --out DIR [--workers N]
 
 jobs.json: [{"id": ..., "path": absolute path, "rel": path inside the playlist, "bytes": size}, ...]
+
+With --jobs -, jobs arrive one JSON object per line on stdin instead, and the helper finishes once
+stdin closes and every job it was given is done. A source without files (live/sources/store.py) uses
+this to keep only a few decoded tracks in its session temp folder at a time; there `id` is a
+file-safe form of the track id and `rel` the track id itself.
 """
 import argparse
 import json
@@ -19,6 +24,7 @@ import multiprocessing as mp
 import os
 import queue
 import sys
+import threading
 import time
 import traceback
 from pathlib import Path
@@ -170,10 +176,11 @@ def main():
     if missing:
         say(event="fatal", error=f"Essentia models missing from {args.models}: {', '.join(missing)}")
         return
-    jobs = sorted(json.loads(Path(args.jobs).read_text()), key=lambda j: -j["bytes"])  # long tracks first
+    streaming = args.jobs == "-"
+    jobs = [] if streaming else sorted(json.loads(Path(args.jobs).read_text()), key=lambda j: -j["bytes"])  # long first
     left = {j["id"]: j for j in jobs}
-    n = min(args.workers, len(jobs))
-    say(event="started", total=len(jobs), workers=n)
+    n = args.workers if streaming else min(args.workers, len(jobs))
+    say(event="started", total=None if streaming else len(jobs), workers=n)
 
     # Our own pool rather than ProcessPoolExecutor: a file that crashes the decoder takes down its
     # process, and with an executor every other job with it. Here only that file fails.
@@ -182,6 +189,21 @@ def main():
     for job in jobs:
         tasks.put(job)
     procs, running, crashes = {}, {}, 0
+    lock, eof = threading.Lock(), threading.Event()
+    if not streaming:
+        eof.set()
+
+    def feed():  # --jobs -: take jobs as the app sends them
+        for line in sys.stdin:
+            if line.strip():
+                job = json.loads(line)
+                with lock:
+                    left[job["id"]] = job
+                tasks.put(job)
+        eof.set()
+
+    if streaming:
+        threading.Thread(target=feed, daemon=True, name="jobs").start()
 
     def spawn():
         p = ctx.Process(target=worker, args=(args.models, args.out, tasks, results), daemon=True)
@@ -190,7 +212,10 @@ def main():
 
     for _ in range(n):
         spawn()
-    while left:
+    while True:
+        with lock:
+            if not left and eof.is_set():
+                break
         try:
             kind, a, b = results.get(timeout=1)
         except queue.Empty:
@@ -198,7 +223,8 @@ def main():
                 if p.is_alive():
                     continue
                 del procs[pid]
-                job = left.pop(running.pop(pid, None), None)
+                with lock:
+                    job = left.pop(running.pop(pid, None), None)
                 if job is None:  # died before taking a job: models broken? don't spin forever
                     crashes += 1
                     if crashes > 2 * n:
@@ -206,16 +232,16 @@ def main():
                         return
                 else:
                     say(event="failed", id=job["id"], rel=job["rel"], error="the decoder crashed on this file")
-                if left:
+                if left or not eof.is_set():
                     spawn()
             continue
+        with lock:
+            job = left.pop(a, None) if kind in ("done", "failed") else None
         if kind == "start":
             running[a] = b
-        elif kind == "done" and a in left:
-            job = left.pop(a)
+        elif kind == "done" and job is not None:
             say(event="done", id=a, rel=job["rel"], **b)
-        elif kind == "failed" and a in left:
-            job = left.pop(a)
+        elif kind == "failed" and job is not None:
             say(event="failed", id=a, rel=job["rel"], error=b)
     for _ in procs:
         tasks.put(None)

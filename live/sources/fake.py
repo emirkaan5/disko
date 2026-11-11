@@ -27,11 +27,14 @@ FAILURES = {
 }
 
 
-def fake_policy(allow=None, analysis_on_disk: bool = False, handle_ttl: float | None = None) -> Policy:
-    """A policy for the fake source; by default everything but recording, nothing kept on disk."""
+def fake_policy(allow=None, analysis_on_disk: bool = False, handle_ttl: float | None = None,
+                audio_in_session_temp: bool = True) -> Policy:
+    """A policy for the fake source; by default everything but recording, nothing kept on disk beyond
+    the session temp folder."""
     allowed = frozenset(Operation) - {Operation.RECORD} if allow is None else frozenset(allow)
     return Policy("fake", allowed, agreement={"reference": "synthetic test source: no third-party music"},
-                  analysis_on_disk=analysis_on_disk, handle_ttl=handle_ttl)
+                  analysis_on_disk=analysis_on_disk, audio_in_session_temp=audio_in_session_temp,
+                  handle_ttl=handle_ttl)
 
 
 def click_track(bpm: float, seconds: float, seed: int = 0) -> np.ndarray:

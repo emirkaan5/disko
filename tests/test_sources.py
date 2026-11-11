@@ -129,7 +129,7 @@ class DenyBeforeUse(unittest.TestCase):
             load_deck(t)
         self.assertEqual(src.reads, [])
 
-    def test_allin1_never_sees_a_streamed_track(self):
+    def test_allin1_never_sees_a_streamed_track_without_a_session_temp_folder(self):
         src = FakeSource(n=2)  # everything but disk retention
         t = src.library_tracks()[0]
 

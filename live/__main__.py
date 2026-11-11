@@ -178,9 +178,9 @@ def headless(args, tcp) -> int:
 
     analyzer = None
     if args.fake:
-        library = fake_library(args.fake)
+        library, analyzer = analyzed(fake_source(args.fake))
     elif args.beatport:
-        library = beatport_library(args.beatport, args.beatport_limit)
+        library, analyzer = analyzed(*beatport_pool(args.beatport, args.beatport_limit))
     elif args.playlist:
         playlist = Playlist(args.playlist)
         indexer = FastIndexer(playlist)
@@ -226,21 +226,27 @@ def headless(args, tcp) -> int:
         engine.close()
         if analyzer is not None:
             analyzer.close()
+        SESSION_TEMP.close()
         kev.stop()  # only if this run started it
     return 0
 
 
-def fake_library(n: int):
-    from .library import Library
+def fake_source(n: int):
     from .sources.fake import FakeSource
     src = FakeSource(n=n, seconds=180.0)
-    return Library(src.library_tracks(), name=src.label)
+    return src, src.library_tracks(), src.label
 
 
-def beatport_library(list_id: str, limit: int):
-    """A library from a Beatport playlist or chart, as a bounded candidate pool (metadata only until
-    a track is played, when its stream is decoded). Reading the audio needs the streaming plan."""
+def fake_library(n: int):
+    """The synthetic catalog as it comes, with no analysis (for snapshots)."""
     from .library import Library
+    _, tracks, name = fake_source(n)
+    return Library(tracks, name=name)
+
+
+def beatport_pool(list_id: str, limit: int):
+    """A Beatport playlist or chart as a bounded candidate pool (metadata only until a track is
+    played, when its stream is decoded). Reading the audio needs the streaming plan."""
     from .sources.beatport import connect, streaming_enabled
     from .sources.pool import candidate_pool
     source = connect()
@@ -248,7 +254,60 @@ def beatport_library(list_id: str, limit: int):
     if not streaming_enabled():
         print("note: DISKO_BEATPORT_STREAMING isn't set, so playing a track will be refused; set it to 1 "
               "once your Beatport Streaming plan is active", file=sys.stderr)
-    return Library(pool.tracks, name=f"Beatport {list_id}")
+    return source, pool.tracks, f"Beatport {list_id}"
+
+
+class _SessionTemp:
+    """The session temp folder, made only if something is decoded into it."""
+    _temp = None
+
+    def get(self):
+        if self._temp is None:
+            from .sources.store import SessionTemp
+            self._temp = SessionTemp()
+        return self._temp
+
+    def close(self):
+        if self._temp is not None:
+            self._temp.close()
+
+
+SESSION_TEMP = _SessionTemp()
+
+
+def analyzed(source, tracks: list, name: str):
+    """(Library, DeepAnalyzer or None) for a source's tracks. When its policy lets disko decode and
+    analyze them through the session temp folder, every track gets the fast pass first (cached by
+    track id) and each pick gets allin1 as it comes up; otherwise they go in as the source described
+    them, on its own tempo and a rough grid."""
+    from .indexer import DeepAnalyzer, SourceIndexer
+    from .library import Library
+    from .sources.store import TEMP_ANALYSIS, SourceStore
+    if not all(source.policy.allows(op) for op in TEMP_ANALYSIS):
+        return Library(tracks, name=name), None
+    temp = SESSION_TEMP.get()
+    store = SourceStore.for_source(source, temp)
+    indexer = SourceIndexer(store, tracks, temp)
+    if indexer.todo:
+        print(f"analyzing {len(indexer.todo)} {source.label} tracks (each decoded into {temp.dir}, "
+              f"deleted once analyzed)…", flush=True)
+
+        def progress(kind, info):
+            if kind == "failed":
+                print(f"  couldn't analyze {info.get('title') or info.get('rel')}: {info['error']}", file=sys.stderr)
+
+        try:
+            counts = indexer.run(progress)
+            print(f"  {counts['done']} analyzed, {counts['failed']} failed", flush=True)
+        except RuntimeError as e:
+            print(f"  analysis stopped: {e}; going on with the source's own metadata", file=sys.stderr)
+    analyzer = DeepAnalyzer(store, temp)
+    try:
+        analyzer.start()  # its imports take a few seconds: get them done before the first pick
+    except RuntimeError as e:
+        print(f"note: {e}; tracks will be mixed on the rough grid", file=sys.stderr)
+        analyzer = None
+    return Library(tracks, name=name), analyzer
 
 
 def main():
@@ -359,9 +418,9 @@ def main():
                 print(f"note: control is off ({e})", file=sys.stderr)
 
     if args.fake:
-        open_set(fake_library(args.fake))
+        open_set(*analyzed(*fake_source(args.fake)))
     elif args.beatport:
-        open_set(beatport_library(args.beatport, args.beatport_limit))
+        open_set(*analyzed(*beatport_pool(args.beatport, args.beatport_limit)))
     elif args.house:
         open_set(Library())
     else:
@@ -382,6 +441,7 @@ def main():
         live["control"].close()
     if "engine" in live:
         live["engine"].close()
+    SESSION_TEMP.close()
     kev.stop()
     sys.exit(code)
 

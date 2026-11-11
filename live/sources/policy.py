@@ -10,7 +10,8 @@ decode, analyze, write, send or export; a denial raises PolicyDenied and nothing
       "provider": "beatport",
       "agreement": {"reference": "...", "date": "2027-01-31", "scope": "personal listening"},
       "allow": ["BROWSE", "METADATA", "DECODE", "ANALYZE"],
-      "retention": {"analysis_on_disk": false, "audio_on_disk": false, "handle_ttl_s": 3600},
+      "retention": {"analysis_on_disk": false, "audio_on_disk": false, "audio_in_session_temp": false,
+                    "handle_ttl_s": 3600},
       "notes": "..."
     }
 """
@@ -39,6 +40,7 @@ class Policy:
     agreement: dict | None = None
     analysis_on_disk: bool = False
     audio_on_disk: bool = False
+    audio_in_session_temp: bool = False  # decoded audio may sit in the session temp folder while it's analyzed
     handle_ttl: float | None = None   # seconds an audio handle stays valid; None: no limit
     reason: str = ""                  # why things are denied, shown with every denial
     notes: str = field(default="", compare=False)
@@ -48,6 +50,8 @@ class Policy:
             return False
         if op is Operation.PERSIST_AUDIO and not self.audio_on_disk:
             return False
+        if op is Operation.TEMP_AUDIO and not (self.audio_in_session_temp or self.audio_on_disk):
+            return False  # keeping audio for good covers keeping it for the session
         return op in self.allowed
 
     def require(self, op: Operation, track_id: TrackId | None = None):
@@ -90,6 +94,7 @@ class Policy:
         return cls(provider, frozenset(allowed), agreement=agreement,
                    analysis_on_disk=retention.get("analysis_on_disk") is True,
                    audio_on_disk=retention.get("audio_on_disk") is True,
+                   audio_in_session_temp=retention.get("audio_in_session_temp") is True,
                    handle_ttl=float(ttl) if isinstance(ttl, (int, float)) and ttl > 0 else None,
                    notes=str(data.get("notes", "")))
 

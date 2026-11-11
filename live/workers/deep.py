@@ -6,7 +6,8 @@ with Demucs and finds its beats, downbeats and labelled sections; before the ste
 each one's level in every bar is measured, so where the bass and vocals play can be worked out
 later. Writes <out>/<id>.allin1.json and <out>/<id>.stems.json.
 
-Reads one JSON request per line on stdin ({"id", "path", "out"}), answers each with a JSON line on
+Reads one JSON request per line on stdin ({"id", "path", "out"}, and optionally "tmp": the folder to
+keep the stems in while they're measured, such as the app's session temp folder), answers each with a JSON line on
 stdout ({"event": "done" | "failed", "id", ...}), and exits when stdin closes, so it never outlives
 the app. Runs in the audio venv (allin1 on Apple's MLX):
 
@@ -58,8 +59,8 @@ def write(dest: Path, data: dict):
     os.replace(tmp, dest)
 
 
-def analyze(allin1_mlx, path: Path, out: Path, track_id: str):
-    with tempfile.TemporaryDirectory(prefix="disko-deep-") as tmp:
+def analyze(allin1_mlx, path: Path, out: Path, track_id: str, tmp_root: str | None = None):
+    with tempfile.TemporaryDirectory(prefix="disko-deep-", dir=tmp_root) as tmp:
         tmp = Path(tmp)
         # No out_dir: with keep_byproducts, all-in-one-mlx 1.0.14 saves its JSON into the stems
         # folder instead, so we write the results ourselves.
@@ -100,7 +101,7 @@ def main():
         start = time.time()
         say(event="started", id=req["id"])
         try:
-            bars = analyze(allin1_mlx, Path(req["path"]), Path(req["out"]), req["id"])
+            bars = analyze(allin1_mlx, Path(req["path"]), Path(req["out"]), req["id"], req.get("tmp"))
             say(event="done", id=req["id"], bars=bars, seconds=round(time.time() - start, 1))
         except Exception as e:
             traceback.print_exc()

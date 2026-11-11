@@ -5,6 +5,9 @@
     local.py    the listener's own playlist folder
     fake.py     a synthetic catalog for tests
     beatport/   Beatport sign-in and browsing, shut until its written terms are recorded
+    spotify/    Spotify sign-in, playlists and catalog metadata (no audio)
+    store.py    analysis for tracks without a file: session temp audio and a per-provider store
+    secrets.py  Keychain storage and .env settings shared by the providers that sign in
 
 Code that touches a track's audio or sends it anywhere asks through `require` first.
 """

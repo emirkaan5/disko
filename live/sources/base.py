@@ -76,6 +76,7 @@ class Operation(Enum):
     ANALYZE = "analyze audio on this machine (Essentia, allin1, Demucs)"
     PERSIST_ANALYSIS = "store analysis results on disk"
     PERSIST_AUDIO = "write decoded audio or stems to disk"
+    TEMP_AUDIO = "write decoded audio or stems to this session's temp folder, deleted once analyzed"
     SEND_TO_MODEL = "send track descriptions to Kev"
     MIX = "mix with disko's own engine (beatmatch, effects, transitions)"
     RECORD = "record or export the set"
@@ -103,6 +104,7 @@ class TrackInfo:
     genres: tuple = ()
     features: dict = field(default_factory=dict)
     provenance: dict = field(default_factory=dict)
+    isrc: str | None = None   # the recording's ISRC, when the source gives one (matches it across sources)
 
 
 @dataclass(frozen=True)
@@ -164,6 +166,7 @@ class Source:
         self.policy = policy
         self.connected = True
         self._handles = set()
+        self._on_close = []
 
     def _live(self):
         if not self.connected:
@@ -212,6 +215,13 @@ class Source:
         for h in list(self._handles):
             h.close()
         self._handles.clear()
+        for fn in self._on_close:
+            fn()
+        self._on_close.clear()
+
+    def on_close(self, fn):
+        """Call `fn` when this source disconnects (to drop whatever was kept for its tracks)."""
+        self._on_close.append(fn)
 
     def _own(self, track_id: TrackId):
         if track_id.provider != self.provider:

@@ -26,12 +26,10 @@ does not use (see the unofficial notes at https://gist.github.com/kemo/506ca56e3
 Tokens live in memory and in the Keychain, never in files, logs, URLs or messages: errors say what
 went wrong, not what was sent.
 """
-import base64
 import hashlib
 import json
 import os
 import secrets
-import subprocess
 import threading
 import time
 import urllib.error
@@ -45,6 +43,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 from ..base import AuthExpired, SourceError, SourceTimeout
+from ..secrets import KeychainStore as _KeychainStore, MemoryStore, parse_env, pkce, truthy
 
 KEYCHAIN_SERVICE = "disko.beatport"
 REFRESH_MARGIN_S = 120      # refresh a token this long before it runs out
@@ -66,31 +65,13 @@ ENV_STREAMING = "DISKO_BEATPORT_STREAMING"
 POST_MESSAGE_PATH = "/auth/o/post-message/"
 
 
-def _truthy(value) -> bool:
-    return str(value or "").strip().lower() in ("1", "true", "yes", "on")
+_truthy = truthy
 
 
 def read_env_file(path: Path = ENV_FILE) -> dict:
-    """KEY=VALUE lines from a .env file (comments, blank lines and `export ` allowed; quotes stripped).
-    A missing file is empty. Warns once if the file holds a secret others can read."""
-    try:
-        text = path.read_text()
-    except OSError:
-        return {}
-    values = {}
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        key, sep, value = line.removeprefix("export ").partition("=")
-        key, value = key.strip(), value.strip()
-        if not sep or not key.isidentifier():
-            continue
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
-            value = value[1:-1]
-        else:
-            value = value.split(" #", 1)[0].strip()
-        values[key] = value
+    """KEY=VALUE lines from a .env file (see secrets.parse_env). Warns once if the file holds a
+    secret others can read."""
+    values = parse_env(path)
     if values.get(ENV_CLIENT_SECRET) and stat.S_IMODE(path.stat().st_mode) & 0o077 and path not in _warned:
         _warned.add(path)
         print(f"disko: {path} holds the Beatport client secret and others can read it; run chmod 600 {path}",
@@ -135,58 +116,9 @@ class NotConfigured(SourceError):
 # ---------------------------------------------------------------- secret storage
 
 
-class MemoryStore:
-    """Secrets in a dict: for tests, and nothing else."""
-
-    def __init__(self, items: dict | None = None):
-        self.items = dict(items or {})
-
-    def get(self, name: str) -> str | None:
-        return self.items.get(name)
-
-    def set(self, name: str, value: str):
-        self.items[name] = value
-
-    def delete(self, name: str):
-        self.items.pop(name, None)
-
-
-class KeychainStore:
-    """Generic passwords in the login Keychain under one service name, through /usr/bin/security.
-
-    Values are written through `security -i`'s stdin (hex-encoded with -X), so they never appear in
-    a process's command line."""
-
+class KeychainStore(_KeychainStore):
     def __init__(self, service: str = KEYCHAIN_SERVICE):
-        if not service.replace(".", "").replace("-", "").isalnum():
-            raise ValueError(f"bad Keychain service name {service!r}")
-        self.service = service
-
-    @staticmethod
-    def _check(name: str):
-        if not name.replace("_", "").isalnum():
-            raise ValueError(f"bad secret name {name!r}")
-
-    def get(self, name: str) -> str | None:
-        self._check(name)
-        r = subprocess.run(["/usr/bin/security", "find-generic-password", "-s", self.service, "-a", name, "-w"],
-                           capture_output=True, text=True)
-        if r.returncode != 0:
-            return None  # not there (exit 44), or the Keychain is locked and the listener said no
-        return r.stdout.rstrip("\n")
-
-    def set(self, name: str, value: str):
-        self._check(name)
-        command = (f"add-generic-password -U -s {self.service} -a {name} -l {self.service}.{name} "
-                   f"-X {value.encode().hex()}\n")
-        r = subprocess.run(["/usr/bin/security", "-i"], input=command, capture_output=True, text=True)
-        if r.returncode != 0 or "error" in r.stderr.lower():
-            raise SourceError(f"couldn't save {name} in the Keychain ({r.stderr.strip() or r.returncode})")
-
-    def delete(self, name: str):
-        self._check(name)
-        subprocess.run(["/usr/bin/security", "delete-generic-password", "-s", self.service, "-a", name],
-                       capture_output=True)
+        super().__init__(service)
 
 
 # ---------------------------------------------------------------- credentials and tokens
@@ -381,8 +313,7 @@ class OAuth:
         if redirect is None:
             raise NotConfigured(f"the redirect URI must be http://127.0.0.1:PORT/path on this Mac, not {self.redirect_uri}")
         state = secrets.token_urlsafe(24)
-        verifier = secrets.token_urlsafe(64)
-        challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+        verifier, challenge = pkce()
         result = {}
         done = threading.Event()
 

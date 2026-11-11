@@ -144,6 +144,50 @@ def structure(a: dict, st: dict, essentia_bpm: float) -> dict:
     return fields
 
 
+def fast_fields(d: dict) -> dict:
+    """Track fields from the fast pass's results (live/workers/fast.py)."""
+    return dict(bpm=d["bpm"] or 120.0, camelot=camelot(d["key"], d["scale"]), key_strength=d["key_strength"],
+                energy=d["arousal"], mood=d["valence"], danceability=d["danceability"],
+                loudness=d["loudness_short_term_mean"], busyness=d["onset_rate"],
+                brightness=d["spectral_centroid_mean"], vocals=vocals_guess(d["voice"]),
+                genres=style_names(d["styles"]), duration=d["duration"], rough_beats=tuple(d["beats"]))
+
+
+def _num(value, digits: int):
+    return "" if value is None else round(value, digits)
+
+
+def csv_row(t: Track, d: dict, file_path: str) -> dict:
+    """A tracks.csv row for an analyzed track (`d`: its fast-pass results)."""
+    row = {"track_uid": t.uid, "file_path": file_path, "title": t.title, "artist": t.artist,
+           "dj_bpm": _num(t.bpm, 2), "camelot": t.camelot or "", "ess_tonal_key_edma_strength": _num(t.key_strength, 3),
+           "ml_arousal": _num(t.energy, 3), "ml_valence": _num(t.mood, 3), "ml_danceability": _num(t.danceability, 4),
+           "ess_lowlevel_loudness_ebu128_short_term_mean": _num(t.loudness, 2),
+           "ess_rhythm_onset_rate": _num(t.busyness, 3), "ess_lowlevel_spectral_centroid_mean": _num(t.brightness, 1),
+           "genres": t.genres or "", "key": f"{d['key']} {d['scale']}", "duration_s": round(t.duration, 1),
+           "ml_voice": round(d["voice"], 3), "tag_genre": (d.get("tags") or {}).get("genre", ""),
+           "analyzed": "fast+structure" if t.deep else "fast"}
+    if t.deep:
+        row.update({
+            "intro_bars_before_bass": t.bass_in_bars, "a1_outro_bars": t.outro_bars,
+            "intro_bars_before_vocals": t.vocals_in_bars, "outro_bars_after_vocals": t.vocals_out_bars,
+            "a1_sections": " | ".join(f"{s.label} {s.start:.1f}-{s.end:.1f}" for s in t.sections),
+            "a1_first_chorus_bar": t.first_drop_bar or "", "stem_bass_bars": t.bass_bars,
+            "stem_vocals_bars": t.vocal_bars, "stem_vocals_present_frac": t.vocals,
+            "stem_drums_energy_share": "" if t.drums is None else t.drums})
+    return row
+
+
+def write_csv(path: Path, rows: list):
+    """tracks.csv, written atomically (the folder may be open in a spreadsheet)."""
+    tmp = path.with_suffix(".tmp")
+    with open(tmp, "w", newline="") as f:
+        w = csv.DictWriter(f, COLUMNS)
+        w.writeheader()
+        w.writerows(rows)
+    os.replace(tmp, path)
+
+
 def _json(path: Path):
     try:
         return json.loads(path.read_text())
@@ -196,6 +240,10 @@ class Playlist:
     def name(self) -> str:
         return self.folder.name
 
+    def key(self, track: Track) -> str:
+        """The name a track's analysis files go by (its file id)."""
+        return track.uid
+
     def _fast(self, f: AudioFile):
         d = _json(self.analysis / f"{f.id}.fast.json")
         return d if d and d.get("version") == FAST_VERSION and d.get("bytes") == f.bytes else None
@@ -239,12 +287,7 @@ class Playlist:
             t = Track(uid=f.id, path=f.path, source=self.source,
                       provenance={"title": named, "features": f"fast pass v{FAST_VERSION}",
                                   "vocals": "guessed from the voice model"},
-                      title=title or "Untitled", artist=artist or "Unknown artist",
-                      bpm=d["bpm"] or 120.0, camelot=camelot(d["key"], d["scale"]), key_strength=d["key_strength"],
-                      energy=d["arousal"], mood=d["valence"], danceability=d["danceability"],
-                      loudness=d["loudness_short_term_mean"], busyness=d["onset_rate"],
-                      brightness=d["spectral_centroid_mean"], vocals=vocals_guess(d["voice"]),
-                      genres=style_names(d["styles"]), duration=d["duration"], rough_beats=tuple(d["beats"]))
+                      title=title or "Untitled", artist=artist or "Unknown artist", **fast_fields(d))
             self._structure(t)
             tracks.append(t)
         self.tracks = tracks
@@ -269,33 +312,9 @@ class Playlist:
 
     def save(self):
         """Write tracks.csv (atomically: the folder may be open in a spreadsheet)."""
-        rows = []
-        for t in self.tracks:
-            d = self.fast[t.uid]
-            row = {"track_uid": t.uid, "file_path": self.by_id[t.uid].rel, "title": t.title, "artist": t.artist,
-                   "dj_bpm": round(t.bpm, 2), "camelot": t.camelot, "ess_tonal_key_edma_strength": round(t.key_strength, 3),
-                   "ml_arousal": round(t.energy, 3), "ml_valence": round(t.mood, 3), "ml_danceability": round(t.danceability, 4),
-                   "ess_lowlevel_loudness_ebu128_short_term_mean": round(t.loudness, 2),
-                   "ess_rhythm_onset_rate": round(t.busyness, 3), "ess_lowlevel_spectral_centroid_mean": round(t.brightness, 1),
-                   "genres": t.genres, "key": f"{d['key']} {d['scale']}", "duration_s": round(t.duration, 1),
-                   "ml_voice": round(d["voice"], 3), "tag_genre": (d.get("tags") or {}).get("genre", ""),
-                   "analyzed": "fast+structure" if t.deep else "fast"}
-            if t.deep:
-                row.update({
-                    "intro_bars_before_bass": t.bass_in_bars, "a1_outro_bars": t.outro_bars,
-                    "intro_bars_before_vocals": t.vocals_in_bars, "outro_bars_after_vocals": t.vocals_out_bars,
-                    "a1_sections": " | ".join(f"{s.label} {s.start:.1f}-{s.end:.1f}" for s in t.sections),
-                    "a1_first_chorus_bar": t.first_drop_bar or "", "stem_bass_bars": t.bass_bars,
-                    "stem_vocals_bars": t.vocal_bars, "stem_vocals_present_frac": t.vocals,
-                    "stem_drums_energy_share": "" if t.drums is None else t.drums})
-            rows.append(row)
+        rows = [csv_row(t, self.fast[t.uid], self.by_id[t.uid].rel) for t in self.tracks]
         with self._lock:
-            tmp = self.csv.with_suffix(".tmp")
-            with open(tmp, "w", newline="") as f:
-                w = csv.DictWriter(f, COLUMNS)
-                w.writeheader()
-                w.writerows(rows)
-            os.replace(tmp, self.csv)
+            write_csv(self.csv, rows)
 
     def summary(self) -> str:
         """'128 tracks · 12 fully analyzed', from what's on disk (for the recent-folders list)."""
