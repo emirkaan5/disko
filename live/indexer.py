@@ -18,6 +18,7 @@ from pathlib import Path
 from .library import Track
 from .playlist import Playlist
 from .sources import Operation, PolicyDenied, SourceError, allows, require
+from .sources.base import TrackInfo
 from .sources.store import TEMP_ANALYSIS, SessionTemp, SourceStore
 
 # allin1 reads the audio and writes temporary stem WAVs along the way (both gone once it's done);
@@ -240,6 +241,213 @@ class SourceIndexer:
             self._slots.release()
 
 
+class PreviewIndexer:
+    """The fast pass over a pool's previews (SPOTIFY_INTEGRATION_PLAN.md, Milestone 4).
+
+    A preview is a 30 s file already on disk (live/sources/spotify/preview.py), so nothing is decoded
+    and the session temp folder isn't used: the clip's path goes to the fast worker as it stands, and
+    what comes back is kept as that track's preview analysis and put in the track as estimates. A
+    track that has one already is filled in from the store without being sent again.
+
+    run() blocks: it is called while the pool is being built, before the set starts, and reports each
+    track through `progress(kind, info)`."""
+
+    def __init__(self, store: SourceStore, tracks: list, previews, workers: int | None = None):
+        self.store, self.previews = store, previews
+        self.workers = workers or max(2, min((os.cpu_count() or 4) - 4, 8))
+        self.tracks = {store.key(t): t for t in tracks}
+        self.proc, self.scratch = None, None
+        self.todo = self._todo(tracks)   # [(track, the clip's path, the provider that supplied it)]
+        self._cancelled = False
+
+    def _todo(self, tracks) -> list:
+        """The clips that still have to be analyzed; ones analyzed before go into their tracks now."""
+        todo = []
+        for track in tracks:
+            saved = self.store.preview(track)
+            if saved is not None:
+                self.store.apply_preview(track, saved, self._provider(track))
+                continue
+            found = self.previews.cached(self._info(track))
+            if found is not None:
+                todo.append((track, found.path, found.provider))
+        return todo
+
+    def run(self, progress=None) -> dict:
+        """Analyze the clips in `todo` and wait for them: {"done": n, "failed": n}, or raise
+        RuntimeError when the analysis can't run at all."""
+        counts = {"done": 0, "failed": 0}
+        if progress is not None:  # what this pool holds and how much of it still needs a clip read
+            progress("start", {"event": "start", "tracks": len(self.tracks), "todo": len(self.todo)})
+        if not self.todo:
+            return counts
+        if not FAST_PYTHON.exists():
+            raise RuntimeError(f"The analysis environment is missing ({FAST_PYTHON}).")
+        self.store.prepare()
+        self.scratch = self.store.dir / "previews"
+        self.scratch.mkdir(parents=True, exist_ok=True)
+        cmd = [str(FAST_PYTHON), str(WORKERS / "fast.py"), "--jobs", "-", "--out", str(self.scratch),
+               "--workers", str(min(self.workers, len(self.todo)))]
+        with open(self.store.dir / "index.log", "a") as log:
+            self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log, text=True,
+                                         bufsize=1, start_new_session=True)
+        threading.Thread(target=self._feed, daemon=True, name="preview-index-feed").start()
+        for line in self.proc.stdout:
+            try:
+                msg = json.loads(line)
+            except ValueError:
+                continue
+            kind = msg.pop("event", "")
+            if kind in ("done", "failed"):
+                kept = self._finish(msg, kind)
+                if kind == "done" and not kept:
+                    kind = msg["event"] = "failed"
+                counts[kind] += 1
+                if progress is not None:
+                    progress(kind, msg)
+            elif kind == "fatal":
+                raise RuntimeError(msg.get("error", "the analysis stopped"))
+            elif kind == "finished":
+                break
+        self.proc.stdout.close()
+        code = self.proc.wait()
+        if not self._cancelled and not any(counts.values()) and code:
+            raise RuntimeError(f"The analysis stopped (exit code {code}); see {self.store.dir / 'index.log'}")
+        return counts
+
+    def _feed(self):
+        try:
+            for track, path, _ in self.todo:
+                size = Path(path).stat().st_size if Path(path).exists() else 0
+                job = {"id": self.store.key(track), "path": str(path), "rel": str(track.id), "bytes": size}
+                self.proc.stdin.write(json.dumps(job) + "\n")
+                self.proc.stdin.flush()
+        except (OSError, ValueError):  # the helper is gone; the reader reports what happened
+            pass
+        finally:
+            try:
+                self.proc.stdin.close()
+            except OSError:
+                pass
+
+    def _finish(self, msg: dict, kind: str) -> bool:
+        """Take in what the fast pass reported for one clip; False when a 'done' came with no results
+        (the track then counts as failed, and stays without a preview analysis)."""
+        track = self.tracks.get(msg.get("id"))
+        if track is not None:
+            msg.update(title=track.title, artist=track.artist, rel=str(track.id))
+        if kind == "failed" or track is None:
+            return True
+        try:
+            results = json.loads((self.scratch / f"{self.store.key(track)}.fast.json").read_text())
+        except (OSError, ValueError):
+            msg["error"] = "the fast pass wrote nothing for the preview"
+            return False
+        self.store.apply_preview(track, results, self._provider(track))
+        return True
+
+    def _provider(self, track: Track) -> str:
+        found = self.previews.cached(self._info(track))
+        return found.provider if found is not None else "missing"
+
+    @staticmethod
+    def _info(track: Track) -> TrackInfo:
+        return TrackInfo(track.id, track.title, artist=track.artist, duration=track.duration or None)
+
+    def cancel(self):
+        self._cancelled = True
+        if self.proc is not None and self.proc.poll() is None:
+            try:
+                os.killpg(self.proc.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+
+
+class FullPass:
+    """The fast pass over one whole track, run just before it is analyzed deeply (Milestone 5, step 2).
+
+    A track whose features came from a 30 s preview is measured again on its own audio as soon as it
+    is picked, so the values the mix uses are the track's own and the beat grid covers all of it.
+    The audio is already in the session temp folder (the deep pass decoded it there), so this is one
+    job to the fast worker, waited for: it runs on the analyzer's background thread, never the UI's.
+
+    The helper stays up for the set: its imports and models cost a few seconds, and a track picked
+    minutes later must not pay them again."""
+
+    TIMEOUT = 120.0  # one track's fast pass; seconds on 12 cores, so this is a hang, not slowness
+
+    def __init__(self, store: SourceStore, workers: int = 1):
+        self.store, self.workers = store, workers
+        self.proc, self.log = None, None
+        self._lines = queue.Queue()
+        self._reader = None
+        self._lock = threading.Lock()
+
+    def start(self):
+        if self.proc is not None and self.proc.poll() is None:
+            return
+        if not FAST_PYTHON.exists():
+            raise RuntimeError(f"the analysis environment is missing ({FAST_PYTHON})")
+        self.store.prepare()
+        self.log = open(self.store.dir / "index.log", "a")
+        self._lines = queue.Queue()
+        self.proc = subprocess.Popen([str(FAST_PYTHON), str(WORKERS / "fast.py"), "--jobs", "-",
+                                      "--out", str(self.store.analysis), "--workers", str(self.workers)],
+                                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.log, text=True,
+                                     bufsize=1, start_new_session=True)
+        self._reader = threading.Thread(target=self._read, args=(self.proc, self._lines), daemon=True,
+                                        name="full-pass")
+        self._reader.start()
+
+    def run(self, track: Track, path) -> bool:
+        """Analyze the track's own audio and replace the estimates a preview produced. Blocks; False
+        when the helper couldn't be asked or gave nothing back (the estimates then stand)."""
+        if not self.store.preview_only(track):
+            return False   # nothing to replace: the source's own values, or the full pass ran already
+        with self._lock:
+            try:
+                self.start()
+                key = self.store.key(track)
+                self.proc.stdin.write(json.dumps({"id": key, "path": str(path), "rel": str(track.id),
+                                                  "bytes": Path(path).stat().st_size}) + "\n")
+                self.proc.stdin.flush()
+            except (OSError, RuntimeError, ValueError):
+                self.proc = None
+                return False
+            if not self._wait(key):
+                return False
+        return self.store.apply(track)
+
+    def _wait(self, key: str) -> bool:
+        deadline = time.monotonic() + self.TIMEOUT
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                _stop(self.proc)   # the next pick starts a fresh helper
+                return False
+            try:
+                message = self._lines.get(timeout=min(left, 1.0))
+            except queue.Empty:
+                continue
+            if message is None or message.get("id") == key:
+                return bool(message) and message.get("event") == "done"
+
+    def _read(self, proc, lines: queue.Queue):
+        for line in proc.stdout:
+            try:
+                lines.put(json.loads(line))
+            except ValueError:
+                continue
+        lines.put(None)
+
+    def close(self):
+        _stop(self.proc)
+        self.proc = None
+        if self.log is not None:
+            self.log.close()
+            self.log = None
+
+
 class DeepAnalyzer:
     """allin1 on one track at a time, in a helper that stays up (its imports take a few seconds).
 
@@ -255,6 +463,7 @@ class DeepAnalyzer:
 
     def __init__(self, store, temp: SessionTemp | None = None):
         self.store, self.temp = store, temp
+        self.full = FullPass(store) if isinstance(store, SourceStore) and temp is not None else None
         self.events = queue.Queue()
         self.proc = None
         self._lock = threading.Lock()
@@ -326,6 +535,10 @@ class DeepAnalyzer:
             return
         with self._lock:
             self._audio[track.uid] = audio
+        if self.full is not None:
+            # Milestone 5, step 2: the track itself replaces the estimates a 30 s preview produced,
+            # so the grid the mix uses covers the whole track. One track, just before it plays.
+            self.full.run(track, audio.path)
         self._send(track, audio.path, tmp=self.temp.folder("stems"))
 
     def _send(self, track: Track, path, tmp=None):
@@ -392,6 +605,8 @@ class DeepAnalyzer:
 
     def close(self):
         self._closed = True
+        if self.full is not None:
+            self.full.close()
         proc = self.proc
         if proc is not None:
             try:

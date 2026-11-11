@@ -4,10 +4,15 @@
                                                     # unless DISKO_SPOTIFY_CLIENT_ID is in .env
     python -m live.sources.spotify login            # sign in through the browser
     python -m live.sources.spotify status
+    python -m live.sources.spotify audio [on|off|show]   # the listener's own choice about Spotify audio
     python -m live.sources.spotify playlists
     python -m live.sources.spotify tracks liked | PLAYLIST_ID_OR_LINK [--limit 50]
     python -m live.sources.spotify track ID [--raw]
     python -m live.sources.spotify logout | forget-client
+
+`audio on` prints the warning and needs an acknowledgement: typing 'on', or --yes when it is being
+done from a script. Nothing else unlocks Spotify audio. The choice is a file of its own
+(~/.disko/spotify/consent.json) that `logout` clears.
 
 --accounts and --api (or DISKO_SPOTIFY_ACCOUNTS / DISKO_SPOTIFY_API) point it elsewhere, such as the
 fake server in tests/fake_spotify.py.
@@ -21,7 +26,8 @@ import webbrowser
 from ..base import SourceError, TrackId
 from ..policy import MATRICES
 from .auth import ENV_CLIENT_ID, ENV_FILE, REDIRECT_URI
-from . import ACCOUNTS, API, PROVIDER, KeychainStore, connect, login, logout, parse_id, status
+from . import (ACCOUNTS, API, PROVIDER, WARNING, ConsentStore, KeychainStore, audio_choice, connect, login, logout,
+               parse_id, set_audio, status)
 
 
 def main(argv=None) -> int:
@@ -34,8 +40,12 @@ def main(argv=None) -> int:
     sub.add_parser("forget-client", help="remove the client ID and sign-in from the Keychain")
     login_p = sub.add_parser("login", help="sign in through the browser")
     login_p.add_argument("--no-browser", action="store_true", help="print the sign-in link instead of opening it")
-    sub.add_parser("logout", help="forget the sign-in")
+    sub.add_parser("logout", help="forget the sign-in and the audio choice with it")
     sub.add_parser("status", help="what's set up and what disko may do with Spotify tracks")
+    audio_p = sub.add_parser("audio", help="the listener's own choice about reading Spotify's audio")
+    audio_p.add_argument("setting", nargs="?", choices=["on", "off", "show"], default="show")
+    audio_p.add_argument("--yes", action="store_true",
+                         help="accept the warning without typing 'on' (for a script, not for a person)")
     sub.add_parser("playlists", help="the account's playlists")
     tracks_p = sub.add_parser("tracks", help="the tracks of a playlist (or `liked`)")
     tracks_p.add_argument("playlist")
@@ -45,7 +55,8 @@ def main(argv=None) -> int:
     track_p.add_argument("--raw", action="store_true", help="print Spotify's own JSON (to check the field mapping)")
     args = ap.parse_args(argv)
     store = KeychainStore()
-    where = {"accounts": args.accounts, "redirect_uri": args.redirect}
+    settings = ConsentStore()
+    where = {"accounts": args.accounts, "redirect_uri": args.redirect, "settings": settings}
 
     try:
         if args.command == "set-client":
@@ -60,7 +71,8 @@ def main(argv=None) -> int:
         elif args.command == "forget-client":
             for name in ("tokens", "client_id"):
                 store.delete(name)
-            print("Removed the Spotify client ID and sign-in from the Keychain.")
+            settings.clear()
+            print("Removed the Spotify client ID, the sign-in and the audio choice from this machine.")
         elif args.command == "login":
             def opener(url):
                 if args.no_browser:
@@ -70,15 +82,36 @@ def main(argv=None) -> int:
             login(store=store, open_browser=opener, **where)
             print("Signed in.")
         elif args.command == "logout":
-            logout(store)
-            print("Signed out here. To remove disko's access for good: https://www.spotify.com/account/apps/")
+            logout(store, settings)
+            print("Signed out here, and the audio choice is cleared with it. "
+                  "To remove disko's access for good: https://www.spotify.com/account/apps/")
+        elif args.command == "audio":
+            current = audio_choice(settings)
+            if args.setting == "show":
+                print(current.summary if current else
+                      "Spotify audio has never been turned on here: browsing only.")
+                if current and current.audio:
+                    print(f"agreement: {current.reference}")
+            elif args.setting == "off":
+                set_audio(settings, audio=False)
+                print("Spotify audio is off. Browsing is unchanged.")
+            else:
+                print(WARNING)
+                if not args.yes:
+                    answer = input("Type 'on' to accept all of that and let disko read Spotify audio: ")
+                    if answer.strip().lower() != "on":
+                        print("Nothing changed: Spotify audio stays off.")
+                        return 1
+                choice = set_audio(settings, audio=True)
+                print(f"Spotify audio is on. {choice.reference}")
         elif args.command == "status":
-            gate = status(store=store)
+            gate = status(store=store, settings=settings)
             matrix = MATRICES / f"{PROVIDER}.json"
             print(f"permissions:  {matrix if matrix.exists() else 'built-in default'}")
             print(f"client ID:    {'set' if gate.configured else 'no' if gate.authorized else 'not checked'}"
                   f"{'' if gate.configured or not gate.authorized else f' (put {ENV_CLIENT_ID} in {ENV_FILE})'}")
             print(f"signed in:    {'yes' if gate.signed_in else 'no' if gate.configured else 'not checked'}")
+            print(f"audio:        {'on since ' + gate.audio_since if gate.audio else 'off (browsing only)'}")
             print(f"allowed:      {', '.join(gate.allowed) or 'nothing'}")
             print(f"status:       {gate.reason}")
             if gate.usable:

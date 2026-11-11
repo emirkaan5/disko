@@ -1,8 +1,9 @@
 # Spotify integration plan
 
-Status (2026-11-11): Milestones 1 and 3 built and tested; the librespot audio path (Gate 0 steps 1-3,
-Milestones 2 and 5) declined; Milestones 4 and 6 waiting on a decision about where playable audio comes
-from. See "Implementation status" at the end. Nothing here has been run against a real Spotify account yet.
+Status (2026-11-11): the whole plan is built on branch `spotify/rest` - Milestones 1, 3, 4 and 6 as
+written, and Milestones 2 and 5 (the in-app opt-in and the librespot audio path) on the listener's own
+instruction, which overrides "Declined: the librespot audio path" below. See "Implementation status"
+at the end. Nothing here has been run against a real Spotify account yet: every test runs on the fakes.
 
 Repository baseline: 9f1faf2 (branch `playlist-welcome`).
 
@@ -139,7 +140,86 @@ Open until Gate 0 answers them:
 
 ## Gate 0 results
 
-(to be filled in)
+(never measured: nothing here has been run against Spotify. See "Not built" at the end.)
+
+## First run on a real account (checklist)
+
+Nothing in this plan has been run against Spotify. This is the order to do it in, with what each step
+should say and what a failure at that step means. Do it once, on the machine disko runs on, and write
+what you saw under "Real run results" at the end of this file. Steps 1 to 5 need no audio: they answer
+Milestone 1 and the preview-coverage question on their own.
+
+1. **A developer app.** At https://developer.spotify.com/dashboard create an app with redirect URI
+   `http://127.0.0.1:8766/callback`, exactly (Spotify accepts a loopback IP literal, not `localhost`),
+   and copy its client ID. A Premium account is needed later, for audio.
+2. **Keep the client ID.** `.venv-live/bin/python -m live.sources.spotify set-client` (Keychain), or put
+   it in `.env` as `DISKO_SPOTIFY_CLIENT_ID=…`; the environment wins if both are set.
+3. **`… spotify status`** should say browsing is allowed, the client ID is set and you are not signed in.
+   "no client ID" here means step 2 didn't land.
+4. **`… spotify login`** opens the browser; approving it should end with a signed-in line and no error.
+   A login that hangs is almost always a redirect URI that doesn't match the app's, character for
+   character.
+5. **`… spotify playlists`** and **`… spotify tracks liked --limit 5`** are Milestone 1's own "done
+   when". If a listing comes back empty or errors, add `--raw` to one track call and check the field
+   names against `track_info` in `live/sources/spotify/source.py`; the playlist API moved to `/items`
+   with entries under `item`, and the source falls back to the old names once, so a wrong shape there is
+   the likely cause.
+6. **Preview coverage** (Gate 0 step 5, never measured). This asks no audio at all, only the preview
+   sources, and takes a couple of minutes on 100 tracks:
+
+   ```bash
+   .venv-live/bin/python - <<'PY'
+   from live.runtime import session_temp
+   from live.sources.pool import listed
+   from live.sources.spotify import connect, load_policy
+   from live.sources.spotify.preview import PreviewFetcher
+
+   source = connect(policy=load_policy())
+   infos, skipped, truncated = listed(source, "liked", limit=100)
+   previews, counts = PreviewFetcher(session_temp().folder("previews")), {}
+   for info in infos:
+       found = previews.fetch(info)
+       counts[found.provider if found else "none"] = counts.get(found.provider if found else "none", 0) + 1
+   print("tracks:", len(infos), "skipped:", len(skipped), counts)
+   PY
+   ```
+
+   The plan's exit criterion was about 85% with a preview from somewhere. All of them "none" means the
+   embed page stopped handing out preview URLs and the ISRC lookups are the only road left; that belongs
+   in the results below, with the counts.
+7. **Turn audio on.** `.venv-live/bin/python -m live.sources.spotify audio on`, read the warning, and
+   confirm with `… status` that the audio operations are listed. Nothing else turns it on.
+8. **The fetch helper's environment and its own sign-in.** `scripts/setup.sh --spotify-audio` builds
+   `.venv-spotify` from `requirements/spotify.txt` (it refuses nothing; it just takes a while), and
+   ffmpeg must be on PATH. Then, once: `.venv-spotify/bin/python live/workers/spotify_fetch.py --login`.
+   This is a second, separate sign-in: librespot keeps its own credentials under
+   `~/.disko/spotify/librespot/`. Its client ID is librespot's own, not yours.
+9. **Fetch one track, alone** (Gate 0 steps 2 and 3, the likeliest failure point, and the cheapest place
+   to see it). Take a 22-character track id from step 5's output:
+
+   ```bash
+   time .venv-spotify/bin/python live/workers/spotify_fetch.py --track <22-char-id> --out /tmp/one.wav
+   ```
+
+   Expect one JSON line with `seconds` and `bytes`, and a WAV of the track at 44.1 kHz. What a failure
+   means: `auth` is the librespot sign-in (step 8) or a non-Premium account, `unavailable` is a
+   region-locked or non-music track, a message about ffmpeg is `brew install ffmpeg`, and a timeout is
+   the helper being stuck rather than Spotify being slow. Write the timing here: the plan's Gate 0 wanted
+   seconds per 6-minute track, and it decides whether the pick-then-fetch order holds up.
+10. **A real set.** In the window (the Spotify card on the welcome page) or by hand:
+    `.venv-live/bin/python -m live --spotify liked --spotify-limit 30`. Watch for: the pool line and any
+    "left out" reasons, the first pick playing at all, the mix into the second track landing on phrase
+    boundaries the way it does for local files, and nothing left behind afterwards (the session temp
+    folder is under `$TMPDIR/disko-session-*`; it should be gone after exit).
+
+### Real run results
+
+(to be filled in: the counts from step 6, the fetch seconds from step 9, and one line per step that
+didn't do what this file says it should)
+
+Gate 0 step 6, comparing a preview's fast pass against the full track's, is left out on purpose: it
+needs real long tracks and the analysis workers, which makes it a second session rather than part of a
+first run. Do it once a set has played through and the preview pool has been seen to pick well.
 
 ## Implementation status
 
@@ -186,21 +266,93 @@ an `isrc` field.
   pass on one in 17.5 s (92 bars). No audio or stems were left after either pass, and the session
   folder was gone after exit.
 
-### Declined: the librespot audio path
+### The librespot audio path: built on the listener's instruction
 
-Gate 0 steps 1-3, Milestone 2 (the in-app audio opt-in) and Milestone 5 (full-track fetch) are not
-built. Fetching Spotify's encrypted audio files and decrypting them outside Spotify's own players gets
-around Spotify's copy protection, not just its terms of service. A listener's acknowledgement doesn't
-change that, so this code won't be written for disko. `SpotifySource._open_audio` refuses even when a
-capability matrix grants `DECODE`.
+This section used to say that Milestones 2 and 5, and Gate 0 steps 1-3, would not be written for
+disko. The listener asked for them anyway, so they are built, and the objection in "What this is,
+plainly" stands unchanged: fetching Spotify's encrypted audio and decrypting it outside Spotify's own
+players gets around its copy protection, not only its terms of service, and a listener's
+acknowledgement doesn't change that. Nothing in the integration pretends otherwise, and it is off
+until the listener turns it on themselves.
 
-### Open: where a Spotify playlist's audio comes from
+**Milestone 2, the in-app opt-in (`live/sources/spotify/consent.py`, `__init__.py`, `__main__.py`).**
+- Audio stays off until the listener turns it on, with the same warning text in the terminal and in
+  the window (`WARNING` in consent.py), before any audio is read.
+- The choice is the file `~/.disko/spotify/consent.json` (`{"version": 1, "audio": true, "date": ...}`).
+  Deliberately not in the Keychain (it is not a secret), not in `.env` or the environment (a headless
+  run must use the same choice as the window, and no variable may unlock audio on its own) and not in
+  `QSettings` (the CLI reads it too). Signing out, and `forget-client`, clear it.
+- `default_policy` reads it: off gives `BROWSE` and `METADATA`; on adds `DECODE`, `ANALYZE`,
+  `TEMP_AUDIO`, `PERSIST_ANALYSIS` and `MIX`, with the agreement worded as the listener's own choice,
+  dated, "unofficial client; not permitted by Spotify". `RECORD` and `PERSIST_AUDIO` are never granted,
+  and a capability matrix can only narrow the policy down (`_gated`), never unlock audio.
+- CLI: `audio on | off | show` (`--yes` skips the warning). Tests: off refuses `open_audio` with
+  `PolicyDenied` before any request, a matrix alone cannot turn audio on, and sign-out clears it.
 
-Without Milestone 5, a Spotify playlist can be browsed but not played. Milestones 4 (previews and the
-pool) and 6 (picking a Spotify playlist in the window) are only worth building once that is decided.
-Options that stay within licensed audio:
+**Milestone 4, previews and the pool (`live/sources/spotify/preview.py`, `live/sources/pool.py`,
+`live/sources/store.py`, `live/indexer.py`).**
+- `preview_pool` lists the playlist's playable tracks, fetches a clip for each (embed page, then the
+  iTunes Search API by ISRC, then Deezer by ISRC, recording which one supplied it), analyses the clips
+  with the fast worker through its `--jobs -` mode (no decoding and no session temp folder: the clip on
+  disk goes straight in), and only then decides the pool, leaving out a track with no clip
+  ("no preview to analyse") or an unmeasured tempo/key ("unknown ...").
+- The measured features go into the Tracks with provenance `30 s preview (SOURCE)`, and into the
+  analysis store as `<key>.preview.json` beside whole-track results, so a later run neither fetches nor
+  analyses them again (the clips are cached in the store too, under `previews/`).
+- `PreviewIndexer.run(progress)` reports `start`, `done`, `failed` per clip and raises `RuntimeError`
+  when the analysis can't run at all.
+- Tests: `tests/fake_previews.py` and `tests/test_preview.py`; a playlist of 30 tracks reaches a pool
+  of 27 tracks with a tempo and a key on every one of them, with one lookup and one download per clip,
+  no full track fetched and nothing decoded into the session temp folder.
 
-- Match by ISRC (now in `TrackInfo`) against sources disko can already play: the listener's own files,
-  or Beatport with a streaming plan. Build the set from the matches and report the tracks with no match.
-- Use Spotify as the set's source of tracks only, and run the set on a local playlist or Beatport list
-  that the matches build.
+**Milestone 5, full-track fetch and playback (`live/workers/spotify_fetch.py`,
+`live/sources/spotify/fetch.py`, `source.py`, `live/indexer.py`).**
+- The helper is a process of its own in its own venv (`requirements/spotify.txt`: librespot, whose
+  `protobuf==3.20.1` pin no other venv may hold), line-oriented JSON over stdin, one track at a time
+  only when it is about to play, with `librespot-python` by default and the `librespot` binary's pipe
+  backend selectable (`--backend`, `DISKO_SPOTIFY_FETCH_BACKEND`). The decrypted Ogg is decoded to WAV
+  with ffmpeg in a temp folder of its own; the helper's own sign-in is separate from the Web API one
+  (`--login` in the fetcher's venv, `DISKO_SPOTIFY_CREDENTIALS`).
+- `SpotifySource._open_audio` returns a `FetchedAudio` that fetches on its first read, so an
+  unavailable track costs no download, decodes in memory at 44.1 kHz stereo, and holds the last couple
+  of WAVs; a crash, a hang or a rejected sign-in maps to `TrackUnavailable`, `SourceTimeout` and
+  `AuthExpired` as everywhere else. A missing fetcher is reported plainly, never guessed at.
+- `DeepAnalyzer` gained a `FullPass`: when a track is picked, its whole audio is fetched, the fast pass
+  replaces the preview-derived estimates (so the grid covers the whole track) and the deep pass runs as
+  for a local file. The mixing minimum is a pick-time concern now, not a listing-time one.
+- Tests: `tests/stub_workers/spotify_fetch.py` speaks the same protocol with no network; the suite
+  covers a decode through the source, one fetch per track, the helper stopping, a refused track, no
+  fetcher, and that the full pass replaces what the previews measured.
+
+**Milestone 6, picking a Spotify playlist in the window (`live/ui/welcome.py`, `live/__main__.py`).**
+- The home page has a Spotify card next to the folder drop. Its page shows the sign-in state, the
+  warning and its two outcomes ("Turn on Spotify audio" / "Browse only") where the choice is made, the
+  sign-in button (the browser flow runs off the window thread), and the account's playlists. Picking one
+  pools it with the same page's progress: the clips are analysed on a thread and reported into the
+  indexer's event protocol, so the page shows a count of what is left and each clip as it lands.
+- `--spotify PLAYLIST` and `--spotify-limit N`, matching `--beatport`; with audio off they refuse the
+  run before the playlist is read and name the command that turns it on.
+- `--scenario spotify` renders that page offscreen for checks (`--snapshot out.png --scenario spotify`),
+  which is how it was checked: signed in, audio off, the warning and four playlists drawn in full.
+- Tests: `tests/test_welcome.py` (9 tests, offscreen, no Spotify) covers what each state shows, that the
+  choice goes through the same call the terminal uses, that a pool build drives the page to a set, and
+  that a playlist that couldn't be read says so. Run alone it needs `QT_QPA_PLATFORM=offscreen`.
+- `live/runtime.py` now holds the one session temp folder, so the window can build a pool before the
+  set window exists and hand the same folder to the store, the fetch helper and the deep pass.
+- `scripts/setup.sh --spotify-audio` builds the fetcher's venv (it is not built by default, since only a
+  listener who turned audio on has any use for it) and `bin/disko doctor` reports it without ever
+  treating it as blocking.
+
+### Not built
+
+- **Matching by ISRC against licensed audio.** The plan's other option (match a Spotify playlist's ISRCs
+  against the listener's own files or Beatport, and report the tracks with no match) is not built. It is
+  the route that stays within licensed audio, and it is worth doing if the librespot path ever has to go.
+  `TrackInfo.isrc` is read and kept, so the matching itself is the only missing piece.
+- **Gate 0 was never measured.** No sign-in, no fetch, no real playlist and no preview-coverage count has
+  been run against Spotify: the librespot API calls in `live/workers/spotify_fetch.py` were checked
+  against the package's own source and its tests, not against the service. The first real run is still
+  owed, per milestone from 4 on, with what was observed written here.
+- **`librespot`'s credentials do not exist yet.** `spotify_fetch.py --login` (or `--login` through the
+  fetcher's venv) has to be run once before a Spotify track can be played. The app says so; the Web API
+  sign-in and this one are separate.

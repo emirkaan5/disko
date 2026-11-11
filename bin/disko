@@ -109,6 +109,18 @@ print(" ".join(m for m in sys.argv[1:] if importlib.util.find_spec(m) is None))'
         fi
     done
 
+    # The Spotify fetch helper's environment (requirements/spotify.txt). Only a listener who turned
+    # Spotify audio on has any use for it, and it is never blocking: browsing a Spotify playlist and
+    # building one of disko's own pools works without it.
+    if [ -x .venv-spotify/bin/python ]; then
+        line "$OK" ".venv-spotify (Spotify audio): $(.venv-spotify/bin/python -V 2>&1)"
+    elif grep -q '"audio": *true' "$HOME/.disko/spotify/consent.json" 2>/dev/null; then
+        line "$NO" ".venv-spotify (Spotify audio): missing while audio is turned on; run scripts/setup.sh --spotify-audio (see requirements/spotify.txt)"
+        fix_setup=1
+    else
+        line "$UNK" ".venv-spotify (Spotify audio): not built (only needed if you turn Spotify audio on)"
+    fi
+
     if [ -f external/kev/pyproject.toml ]; then
         line "$OK" "Kev: external/kev"
         if [ -x external/kev/.venv/bin/python ]; then
@@ -142,9 +154,9 @@ print(" ".join(m for m in sys.argv[1:] if importlib.util.find_spec(m) is None))'
     ffmpeg=$(command -v ffmpeg 2>/dev/null || true)
     [ -n "$ffmpeg" ] || { [ -x /opt/homebrew/bin/ffmpeg ] && ffmpeg=/opt/homebrew/bin/ffmpeg; } || true
     if [ -n "$ffmpeg" ]; then
-        line "$OK" "ffmpeg: $ffmpeg (for AAC/M4A files and Beatport streams)"
+        line "$OK" "ffmpeg: $ffmpeg (for AAC/M4A files, Beatport streams and a fetched Spotify track)"
     else
-        line "$UNK" "ffmpeg: not found; optional, only AAC/M4A files and Beatport streams need it (brew install ffmpeg)"
+        line "$UNK" "ffmpeg: not found; optional, needed only by AAC/M4A files, Beatport streams and a fetched Spotify track (brew install ffmpeg)"
     fi
 
     control="${DISKO_CONTROL_DIR:-$HOME/.disko}/control.sock"

@@ -1,14 +1,15 @@
 """Spotify as a track source: the account's playlists and Liked Songs, and catalog metadata from the
-Web API. No audio.
+Web API. Audio, when the listener has turned it on, comes through the fetch helper.
 
 Playlist ids are Spotify's own (a bare id, a spotify:playlist: URI or an open.spotify.com link all
 work), or `liked` for the account's Liked Songs.
 
 What Spotify says about a track is its title, artists, length, ISRC and whether it plays in the
 account's market. It supplies no tempo or key (the audio-features endpoint is closed to new apps),
-so every Spotify track is short of the mixing minimum and `candidate_pool` lists it with that
-reason. `track_info` is the one place that knows the JSON field names; check it against a real
-answer with `python -m live.sources.spotify track ID --raw`.
+so a Spotify track's tempo and key come from a 30 s preview (preview.py) and its audio, when it is
+about to play, from the fetch helper (fetch.py, Milestone 5). `track_info` is the one place that
+knows the JSON field names; check it against a real answer with
+`python -m live.sources.spotify track ID --raw`.
 
 Spotify renamed parts of the playlist API in 2026 (`/playlists/{id}/items`, entries under `item`);
 both the new and the older names (`/tracks`, `track`) are read.
@@ -29,6 +30,8 @@ MARKET = {"market": "from_token"}   # ask for availability in the signed-in acco
 SPOTIFY_ID = re.compile(r"^[0-9A-Za-z]{22}$")
 RESTRICTIONS = {"market": Availability.REGION_RESTRICTED, "product": Availability.ENTITLEMENT_REQUIRED,
                 "explicit": Availability.UNAVAILABLE}
+NO_FETCHER = ("Spotify audio needs the fetch helper (live/sources/spotify/fetch.py); "
+              "see SPOTIFY_INTEGRATION_PLAN.md, Gate 0")
 
 
 def parse_id(text: str, kind: str) -> str:
@@ -92,9 +95,10 @@ class SpotifySource(Source):
     provider = PROVIDER
     label = "Spotify"
 
-    def __init__(self, client, policy: Policy, session=None):
+    def __init__(self, client, policy: Policy, session=None, fetcher=None):
         super().__init__(policy)
         self.client, self.session = client, session
+        self.fetcher = fetcher   # live/sources/spotify/fetch.py; only needed to read audio
         self._items_path = "/playlists/{}/items"   # falls back to /tracks once if this one is missing
 
     def account(self) -> dict:
@@ -150,4 +154,32 @@ class SpotifySource(Source):
         return self.client.get(f"/tracks/{parse_id(track_id.key, 'track')}", MARKET)
 
     def _open_audio(self, track_id: TrackId) -> AudioHandle:
-        raise SourceError("disko has no licensed way to read Spotify audio; Spotify tracks can be browsed, not played")
+        """A handle over the track's audio, which the fetcher reads the first time it is used.
+
+        What arrives is written into the session temp folder (the retention TEMP_AUDIO records) and
+        deleted as the next tracks come in; see fetch.py. The base class has already checked DECODE,
+        which for this provider only a policy built on the listener's own choice grants."""
+        if self.fetcher is None:
+            raise SourceError(NO_FETCHER)
+        self.policy.require(Operation.TEMP_AUDIO, track_id)
+        return FetchedAudio(self, track_id)
+
+    def close(self):
+        """Disconnect: nothing fetched for this session stays behind."""
+        if self.fetcher is not None:
+            self.fetcher.drop()  # the helper process itself belongs to whoever started it
+        super().close()
+
+
+class FetchedAudio(AudioHandle):
+    """A fetched track, decoded in memory. The fetch happens on the first read and only then, so a
+    track that turns out to be unavailable costs no download; the file on disk belongs to the
+    fetcher, which is the one that deletes it."""
+
+    def __init__(self, source: SpotifySource, track_id: TrackId):
+        super().__init__(track_id)
+        self.source = source
+
+    def _read(self) -> tuple:
+        from ...audio import decode  # the decoder needs the audio stack; browsing doesn't
+        return decode(self.source.fetcher.fetch(self.track_id))

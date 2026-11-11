@@ -6,6 +6,8 @@
     .venv-live/bin/python -m live --fake 12                # a synthetic catalog (live/sources/fake.py): no real music
     .venv-live/bin/python -m live --beatport chart:1234     # a Beatport list as the library (needs a sign-in;
                                                             # DISKO_BEATPORT_STREAMING=1 also plays it)
+    .venv-live/bin/python -m live --spotify liked          # a Spotify playlist as the library (needs a sign-in
+                                                            # and Spotify audio turned on by the listener)
     .venv-live/bin/python -m live --playlist DIR --no-control  # don't take commands from live.ctl (live/control.py);
                                                                # the control socket is on by default
     .venv-live/bin/python -m live --headless --playlist DIR   # no window: Kev DJs, controlled through live.ctl
@@ -112,6 +114,11 @@ def welcome_snapshot(args):
         home = os.path.expanduser("~")
         w.show_home([(f"{home}/Music/Friday warm-up", "64 tracks · 12 played before"),
                      (f"{home}/Projects/disko/data/house/audio", "568 tracks")])
+    elif args.scenario == "spotify":     # the state a listener meets just after signing in
+        from .sources.spotify import GateStatus
+        w.show_spotify([("liked", "Liked Songs", 812), ("37i9dQZF1DXcBWIGoYBM5M", "Today's Top Hits", 50),
+                        ("2v3iNvBX8Ay1Gt2uXtUKUT", "late night drive", 128), ("69F2g4zXZ2nQKTECAj4bQl", "warm up", None)],
+                       state=GateStatus(True, True, True, ("BROWSE", "METADATA"), "ready", audio=False))
     else:
         if not args.playlist:
             sys.exit("--scenario indexing needs --playlist (a folder that isn't indexed yet)")
@@ -166,7 +173,9 @@ def headless(args, tcp) -> int:
     from .kev import Kev
     from .library import Library
     from .playlist import Playlist
+    from .runtime import close_session_temp
     from .session import Session
+    from .sources import SourceError
 
     def prepare(track, ratio=1.0):
         from .audio import load_deck
@@ -181,6 +190,12 @@ def headless(args, tcp) -> int:
         library, analyzer = analyzed(fake_source(args.fake))
     elif args.beatport:
         library, analyzer = analyzed(*beatport_pool(args.beatport, args.beatport_limit))
+    elif args.spotify:
+        try:
+            library, analyzer = spotify_set(args.spotify, args.spotify_limit)
+        except SourceError as e:
+            print(f"spotify: {e}", file=sys.stderr)
+            return 1
     elif args.playlist:
         playlist = Playlist(args.playlist)
         indexer = FastIndexer(playlist)
@@ -199,7 +214,8 @@ def headless(args, tcp) -> int:
     elif args.house:
         library = Library()
     else:
-        print("--headless needs --playlist DIR, --beatport LIST, --house or --fake N", file=sys.stderr)
+        print("--headless needs --playlist DIR, --beatport LIST, --spotify PLAYLIST, --house or --fake N",
+              file=sys.stderr)
         return 2
     write_install_record()
     kev = Kev()
@@ -226,7 +242,7 @@ def headless(args, tcp) -> int:
         engine.close()
         if analyzer is not None:
             analyzer.close()
-        SESSION_TEMP.close()
+        close_session_temp()
         kev.stop()  # only if this run started it
     return 0
 
@@ -244,6 +260,60 @@ def fake_library(n: int):
     return Library(tracks, name=name)
 
 
+def spotify_pool(playlist: str, limit: int):
+    """A Spotify playlist as a bounded candidate pool (SPOTIFY_INTEGRATION_PLAN.md, Milestones 4 and 6).
+
+    Spotify's catalog carries no tempo and no key, so the pool is built from a 30 s preview of every
+    track (Milestone 4) and nothing is fetched in full until a track is picked (Milestone 5). Audio
+    has to be turned on first, by the listener themselves: without it a Spotify track can be browsed
+    but not played, and there would be no set to run."""
+    from .runtime import session_temp
+    from .sources import Operation, SourceError
+    from .sources.pool import preview_pool
+    from .sources.spotify import ConsentStore, connect, load_policy
+    from .sources.spotify.fetch import Fetcher
+    from .sources.spotify.preview import PreviewFetcher
+    from .sources.store import SourceStore
+    settings = ConsentStore()
+    policy = load_policy(settings=settings)
+    if not policy.allows(Operation.TEMP_AUDIO):
+        raise SourceError("Spotify audio is off. Turn it on first and read what it means:\n"
+                          "  python -m live.sources.spotify audio on\n"
+                          "  python -m live.sources.spotify status")
+    temp = session_temp()
+    source = connect(policy=policy, settings=settings, fetcher=Fetcher(temp.folder("fetch")))
+    store = SourceStore.for_source(source, temp)
+    previews = PreviewFetcher(store.dir / "previews")
+
+    def progress(kind, info):
+        if kind == "failed":
+            print(f"  no features for {info.get('title') or info.get('rel')}: {info['error']}", file=sys.stderr)
+
+    pool = preview_pool(source, playlist, previews, store, limit=limit, progress=progress)
+    print(f"Spotify {playlist}: {pool.summary()}", flush=True)
+    for info, why in pool.skipped[:10]:
+        print(f"  left out: {info.artist} – {info.title}: {why}", flush=True)
+    if len(pool.skipped) > 10:
+        print(f"  and {len(pool.skipped) - 10} more left out", flush=True)
+    if not pool.tracks:
+        raise SourceError(f"nothing in this playlist can be played: {pool.summary()}")
+    return source, pool, store, temp, f"Spotify {playlist}"
+
+
+def spotify_set(playlist: str, limit: int):
+    """(Library, DeepAnalyzer or None) for a Spotify playlist, ready for a set (Milestone 6)."""
+    from .indexer import DeepAnalyzer
+    from .library import Library
+    source, pool, store, temp, name = spotify_pool(playlist, limit)
+    analyzer = DeepAnalyzer(store, temp)
+    try:  # its imports take a few seconds: done before the first pick, as for a folder
+        analyzer.start()
+    except RuntimeError as e:
+        print(f"note: {e}; Spotify tracks will be mixed on their preview tempo", file=sys.stderr)
+        analyzer = None
+    return Library(pool.tracks, name=name), analyzer
+
+
 def beatport_pool(list_id: str, limit: int):
     """A Beatport playlist or chart as a bounded candidate pool (metadata only until a track is
     played, when its stream is decoded). Reading the audio needs the streaming plan."""
@@ -257,24 +327,6 @@ def beatport_pool(list_id: str, limit: int):
     return source, pool.tracks, f"Beatport {list_id}"
 
 
-class _SessionTemp:
-    """The session temp folder, made only if something is decoded into it."""
-    _temp = None
-
-    def get(self):
-        if self._temp is None:
-            from .sources.store import SessionTemp
-            self._temp = SessionTemp()
-        return self._temp
-
-    def close(self):
-        if self._temp is not None:
-            self._temp.close()
-
-
-SESSION_TEMP = _SessionTemp()
-
-
 def analyzed(source, tracks: list, name: str):
     """(Library, DeepAnalyzer or None) for a source's tracks. When its policy lets disko decode and
     analyze them through the session temp folder, every track gets the fast pass first (cached by
@@ -282,10 +334,11 @@ def analyzed(source, tracks: list, name: str):
     them, on its own tempo and a rough grid."""
     from .indexer import DeepAnalyzer, SourceIndexer
     from .library import Library
+    from .runtime import session_temp
     from .sources.store import TEMP_ANALYSIS, SourceStore
     if not all(source.policy.allows(op) for op in TEMP_ANALYSIS):
         return Library(tracks, name=name), None
-    temp = SESSION_TEMP.get()
+    temp = session_temp()
     store = SourceStore.for_source(source, temp)
     indexer = SourceIndexer(store, tracks, temp)
     if indexer.todo:
@@ -321,6 +374,11 @@ def main():
                          "and DISKO_BEATPORT_STREAMING=1 to play")
     ap.add_argument("--beatport-limit", type=int, default=100, metavar="N",
                     help="how many tracks to take from the Beatport list (default 100)")
+    ap.add_argument("--spotify", metavar="PLAYLIST",
+                    help="run a set from a Spotify playlist (an id, a link or `liked`); needs a sign-in and "
+                         "Spotify audio turned on with `python -m live.sources.spotify audio on`")
+    ap.add_argument("--spotify-limit", type=int, default=100, metavar="N",
+                    help="how many tracks to take from the Spotify playlist (default 100)")
     ap.add_argument("--control", action="store_true",
                     help="accept commands on the local control socket (~/.disko/control.sock, this user only); "
                          "on by default, kept for compatibility")
@@ -330,7 +388,7 @@ def main():
     ap.add_argument("--headless", action="store_true", help="no window: Kev DJs, controlled with python -m live.ctl")
     ap.add_argument("--snapshot", help="render the window to this PNG offscreen and exit")
     ap.add_argument("--scenario", default="mix",
-                    choices=["welcome", "indexing", "start", "browse", "plan", "queued", "mix", "after", "kev", "kevmix",
+                    choices=["welcome", "spotify", "indexing", "start", "browse", "plan", "queued", "mix", "after", "kev", "kevmix",
                              "kevafter"])
     ap.add_argument("--start", help="(real run) open this track (uid or part of its title) right away")
     ap.add_argument("--volume", type=float, help="(real run) output volume 0-1")
@@ -359,6 +417,7 @@ def main():
 
     from . import dsp
     from .engine import Engine
+    from .runtime import close_session_temp
     from .indexer import DeepAnalyzer
     from .kev import Kev
     from .library import Library
@@ -372,7 +431,7 @@ def main():
     app.setStyleSheet(theme.STYLESHEET)
     app.setFont(theme.font(12.5))
 
-    if args.snapshot and args.scenario in ("welcome", "indexing"):
+    if args.snapshot and args.scenario in ("welcome", "spotify", "indexing"):
         welcome_snapshot(args)
         return
     dsp.warmup()
@@ -421,6 +480,12 @@ def main():
         open_set(*analyzed(*fake_source(args.fake)))
     elif args.beatport:
         open_set(*analyzed(*beatport_pool(args.beatport, args.beatport_limit)))
+    elif args.spotify:
+        from .sources import SourceError
+        try:
+            open_set(*spotify_set(args.spotify, args.spotify_limit))
+        except SourceError as e:
+            sys.exit(f"spotify: {e}")
     elif args.house:
         open_set(Library())
     else:
@@ -432,7 +497,12 @@ def main():
             open_set(Library(playlist.tracks, name=playlist.name), analyzer, welcome.geometry())
             welcome.close()
 
+        def ready_set(chosen):           # a Spotify playlist the window pooled itself
+            open_set(*chosen, welcome.geometry())
+            welcome.close()
+
         welcome.ready.connect(ready)
+        welcome.ready_set.connect(ready_set)
         welcome.show()
         if args.playlist:
             welcome.open(args.playlist)
@@ -441,7 +511,7 @@ def main():
         live["control"].close()
     if "engine" in live:
         live["engine"].close()
-    SESSION_TEMP.close()
+    close_session_temp()
     kev.stop()
     sys.exit(code)
 

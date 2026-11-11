@@ -12,7 +12,7 @@ from pathlib import Path
 from unittest import mock
 
 from live import indexer
-from live.indexer import DeepAnalyzer, SourceIndexer
+from live.indexer import DeepAnalyzer, FullPass, SourceIndexer
 from live.sources import Operation, Policy, PolicyDenied
 from live.sources.fake import FakeSource, fake_policy
 from live.sources.store import SessionTemp, SourceStore
@@ -196,6 +196,82 @@ class DeepPassTest(Stubbed):
         self.addCleanup(analyzer.close)
         with self.assertRaises(RuntimeError):
             analyzer.analyze(src.library_tracks()[1]).result(timeout=10)
+        self.assertEqual(self.audio_left(), [])
+
+
+class PreviewAndFullPassTest(Stubbed):
+    """Milestones 4 and 5, steps 1 to 3: a clip's features are estimates, the track's own replace
+    them as soon as it is picked, and the grid only ever comes from the whole track."""
+
+    RESULTS = {"version": 1, "path": "fake:t00", "bytes": 10, "tags": {}, "duration": 30.0, "bpm": 128.0,
+               "beats": [i * 0.5 for i in range(30)], "key": "A", "scale": "minor", "key_strength": 0.7,
+               "loudness_short_term_mean": -8.0, "onset_rate": 3.0, "spectral_centroid_mean": 2100.0,
+               "danceability": 1.2, "voice": 0.3, "valence": 5.5, "arousal": 6.5,
+               "styles": {"Electronic---House": 0.8}}
+
+    def setUp(self):
+        super().setUp()
+        self.src = FakeSource(n=1, seconds=12.0, missing={"fake:t00": ("bpm", "camelot", "energy")})
+        self.track = self.src.library_tracks()[0]
+        self.store = SourceStore.for_source(self.src, self.temp)
+
+    def test_a_clip_fills_in_only_what_the_source_left_unknown_and_never_the_grid(self):
+        mood = self.track.mood
+        self.store.apply_preview(self.track, self.RESULTS, "itunes")
+        self.assertEqual(self.track.bpm, 128.0)
+        self.assertEqual(self.track.camelot, "8A")          # A minor, from the clip's key
+        self.assertEqual(self.track.energy, 6.5)
+        self.assertEqual(self.track.provenance["bpm"], "30 s preview (itunes)")
+        self.assertIn("nothing from the whole track yet", self.track.provenance["features"])
+        self.assertFalse(self.track.rough_beats)            # a clip says nothing about the grid
+        self.assertEqual(self.track.mood, mood)             # what the source knew is not touched
+        self.assertEqual(self.track.provenance["mood"], "fake source")
+        self.assertEqual(self.track.duration, 12.0)         # the source's own length is not overwritten
+        self.assertIsNotNone(self.store.preview(self.track))
+        self.assertEqual(self.store.pending([self.track]), [])   # the full pass waits for the pick
+        self.assertTrue(self.store.preview_only(self.track))
+
+    def test_a_saved_clip_is_applied_again_without_being_analyzed_again(self):
+        self.store.apply_preview(self.track, self.RESULTS, "deezer")
+        fresh = self.src.library_tracks()[0]
+        again = SourceStore.for_source(self.src, self.temp)
+        again.apply_preview(fresh, again.preview(fresh), "deezer")
+        self.assertEqual(fresh.bpm, 128.0)
+        self.assertEqual(fresh.provenance["bpm"], "30 s preview (deezer)")
+
+    def test_the_whole_track_replaces_the_estimates_and_brings_the_grid_with_it(self):
+        self.store.apply_preview(self.track, self.RESULTS, "itunes")
+        full = FullPass(self.store)
+        self.addCleanup(full.close)
+        with self.temp.decode(self.track) as audio:
+            self.assertTrue(full.run(self.track, audio.path))
+        self.assertAlmostEqual(self.track.bpm, 123.0 + len(self.store.key(self.track)) % 5)  # the stub's pass
+        self.assertNotAlmostEqual(self.track.bpm, 128.0)     # the clip's estimate is gone
+        self.assertEqual(self.track.provenance["bpm"], "fast pass v1 on the full track")
+        self.assertEqual(len(self.track.rough_beats), 300)  # the grid now covers the whole track
+        self.assertFalse(self.store.preview_only(self.track))
+        with self.temp.decode(self.track) as audio:
+            self.assertFalse(full.run(self.track, audio.path))  # nothing left to replace
+        self.assertEqual(self.audio_left(), [])
+
+    def test_a_full_pass_without_a_clip_first_changes_nothing(self):
+        full = FullPass(self.store)
+        self.addCleanup(full.close)
+        with self.temp.decode(self.track) as audio:
+            self.assertFalse(full.run(self.track, audio.path))  # the source's own values stand
+        self.assertFalse(self.track.rough_beats)
+        self.assertIsNone(self.track.bpm)
+        self.assertIsNone(self.track.provenance.get("bpm"))
+
+    def test_a_pick_decodes_once_and_runs_both_passes_on_it(self):
+        self.store.apply_preview(self.track, self.RESULTS, "itunes")
+        analyzer = DeepAnalyzer(self.store, self.temp)
+        self.addCleanup(analyzer.close)
+        analyzer.analyze(self.track).result(timeout=30)
+        self.assertTrue(self.track.deep)                    # the deep pass ran...
+        self.assertEqual(self.track.provenance["bpm"], "fast pass v1 on the full track")  # ...after the full one
+        self.assertEqual(len(self.track.rough_beats), 300)
+        self.assertEqual(self.src.reads, [self.track.id])   # one decode, for both passes
         self.assertEqual(self.audio_left(), [])
 
 

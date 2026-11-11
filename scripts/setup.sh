@@ -6,6 +6,9 @@
 #   scripts/setup.sh --dry-run       print what it would do; change nothing
 #   scripts/setup.sh --upgrade       also re-run `uv pip install -r` on existing venvs
 #   scripts/setup.sh --kev-weights   also download Kev's weights (several GB, once)
+#   scripts/setup.sh --spotify-audio also build the Spotify fetch helper's venv, which reads Spotify
+#                                    audio through librespot: against Spotify's terms, so it is only
+#                                    built when asked for (see requirements/spotify.txt)
 #
 # Works on macOS's stock bash 3.2.
 set -eu
@@ -16,12 +19,14 @@ cd "$REPO"
 DRY=0
 UPGRADE=0
 WEIGHTS=0
+SPOTIFY=0
 for arg in "$@"; do
     case $arg in
         --dry-run|-n) DRY=1 ;;
         --upgrade) UPGRADE=1 ;;
         --kev-weights) WEIGHTS=1 ;;
-        -h|--help) sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --spotify-audio) SPOTIFY=1 ;;
+        -h|--help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "setup.sh: unknown option $arg (try --help)" >&2; exit 2 ;;
     esac
 done
@@ -82,7 +87,18 @@ say "uv: $UV ($("$UV" --version | awk '{print $2}'))"
 # --- the venvs --------------------------------------------------------------------------------
 
 # One venv per job: essentia-tensorflow clashes with plain essentia.
-for spec in "live:.venv-live:the app" "fast:.venv-essentia-tf:the fast pass" "audio:.venv-audio:the deep pass"; do
+VENVS="live:.venv-live:the app fast:.venv-essentia-tf:the fast pass audio:.venv-audio:the deep pass"
+# The Spotify fetch helper's venv reads the account's audio through librespot, which is against
+# Spotify's terms of service, so it is only built when the listener asks for it. Without it a Spotify
+# playlist can be browsed and paused over but not played.
+if [ "$SPOTIFY" = 1 ]; then
+    VENVS="$VENVS spotify:.venv-spotify:the Spotify fetch helper (librespot)"
+    if ! command -v ffmpeg >/dev/null 2>&1; then
+        say "Note: the fetch helper decodes a fetched track with ffmpeg, which isn't on PATH."
+        say "      Install it with \`brew install ffmpeg\`, or a fetch will fail when a track is picked."
+    fi
+fi
+for spec in $VENVS; do
     name=${spec%%:*}
     rest=${spec#*:}
     venv=${rest%%:*}

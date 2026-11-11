@@ -115,9 +115,34 @@ DISKO_BEATPORT_STREAMING=1 .venv-live/bin/python -m live --beatport chart:1234
 
 The v4 docs don't show response formats, so check the field mapping (`track_info` in `live/sources/beatport/source.py`) against the `--raw` output from your first real call. `tests/fake_beatport.py` is the stand-in server the tests use. Run it on its own and pass its address with `--api` to try the commands without Beatport.
 
+### Spotify
+
+disko can sign in to Spotify with your own developer app, list your playlists and Liked Songs, and read a track's metadata, ISRC and market availability. It carries no tempo or key, so what a track sounds like is measured instead: a 30 s preview of every track in the playlist makes the pool, and the whole track is fetched and analysed only when it is about to play. See `SPOTIFY_INTEGRATION_PLAN.md`.
+
+Browsing needs one thing: **your own client ID**, from a Spotify developer app with `http://127.0.0.1:8766/callback` registered as its redirect URI. The client ID is not a secret, so it goes in the environment or the Keychain:
+
+```bash
+.venv-live/bin/python -m live.sources.spotify set-client        # stores it in the Keychain
+.venv-live/bin/python -m live.sources.spotify login             # opens the browser
+.venv-live/bin/python -m live.sources.spotify playlists
+.venv-live/bin/python -m live.sources.spotify tracks liked --limit 50
+```
+
+To play a set from one of them, pass the playlist to `live` (an id, a link or `liked`):
+
+```bash
+.venv-live/bin/python -m live --spotify liked --spotify-limit 50
+```
+
+That only works once you have turned Spotify audio on, in the window's Spotify page or with `audio on`, after reading what it means; there is no other switch, no environment variable and no capability matrix that can turn it on. Audio then comes through librespot, an unofficial client, which is **against Spotify's terms of service** whatever plan the account holds: the account could be suspended, and it can stop working without notice. The switch is off until you turn it on yourself, and signing out clears it. It needs `scripts/setup.sh --spotify-audio` (the fetcher's own venv, `requirements/spotify.txt`) and ffmpeg. Nothing is recorded or exported, and decoded audio lives only in the session's temp folder.
+
+Nothing here has been run against a real Spotify account yet. The first run, step by step, with what each step should print and what a failure at that step means, is the checklist at the end of `SPOTIFY_INTEGRATION_PLAN.md`; write what you saw into its "Real run results".
+
+`tests/fake_spotify.py` is the stand-in server the tests use, `tests/fake_previews.py` stands in for the preview sources, and `tests/stub_workers/spotify_fetch.py` stands in for librespot. No test touches Spotify.
+
 ## Setup
 
-disko runs on Apple Silicon Macs: allin1 and Kev both use MLX. It needs [uv](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/install.sh | sh`); ffmpeg (`brew install ffmpeg`) is optional and only used for AAC/M4A files and Beatport streams. Then:
+disko runs on Apple Silicon Macs: allin1 and Kev both use MLX. It needs [uv](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/install.sh | sh`); ffmpeg (`brew install ffmpeg`) is optional and only used for AAC/M4A files, Beatport streams and a fetched Spotify track. Then:
 
 ```bash
 ./scripts/setup.sh                 # or: bin/disko setup
@@ -127,6 +152,7 @@ It sets up whatever is missing and leaves the rest alone, so it is safe to run a
 
 - `--dry-run` prints every step it would take and changes nothing.
 - `--kev-weights` also downloads Kev's weights (several GB, once). Without it, setup prints the command.
+- `--spotify-audio` also builds the fetcher's venv (`.venv-spotify`, `requirements/spotify.txt`). Nothing uses it unless you turn Spotify audio on, and it is left out otherwise.
 - `--upgrade` re-installs the requirements into venvs that already exist. It never deletes a venv.
 
 What it does, which is also how to do it by hand:

@@ -1,0 +1,15 @@
+# .venv-spotify: the Spotify fetch helper's own environment (live/workers/spotify_fetch.py).
+# Only needed if you turn Spotify audio on (live/sources/spotify/consent.py); nothing else in disko
+# uses it, and it is kept apart because librespot pins protobuf==3.20.1, which no other venv may hold.
+#
+#   uv venv .venv-spotify --python 3.14
+#   uv pip install --python .venv-spotify -r requirements/spotify.txt
+#
+# Read what turning it on means before installing it: it is against Spotify's terms of service
+# whatever plan the account holds, the account could be suspended, and it can stop working without
+# notice. scripts/setup.sh --spotify-audio does the two commands above.
+#
+# Decoding a fetched track also needs ffmpeg on PATH (brew install ffmpeg): the decrypted stream is
+# Ogg Vorbis, which libsndfile can't read.
+librespot>=0.0.10,<1
+protobuf==3.20.1        # librespot's own pin, and the reason this is a venv of its own

@@ -1,6 +1,9 @@
-"""The welcome screen: pick a playlist folder, then watch disko get to know it before the set starts."""
+"""The welcome screen: pick a playlist folder or a Spotify playlist, then watch disko get to know it
+before the set starts. Spotify audio is the listener's own decision and is asked for here, in the
+app, before any of it is read (SPOTIFY_INTEGRATION_PLAN.md, Milestones 2 and 6)."""
 import json
 import queue
+import threading
 import time
 from pathlib import Path
 
@@ -11,10 +14,14 @@ from PySide6.QtWidgets import (QFileDialog, QFrame, QHBoxLayout, QLabel, QMainWi
 
 from ..indexer import FastIndexer
 from ..playlist import Playlist, camelot, guess_names
+from ..sources.spotify.consent import WARNING as SPOTIFY_WARNING
 from . import theme as T
 from .widgets import Painted, caps, clear, label
 
 RECENT = 5
+# The listener's own acknowledgement, in the words the terminal uses (live/sources/spotify/consent.py):
+# the same text wherever the choice is made, so it can't be softened in one place and not the other.
+WARNING_LINES = tuple(part.strip() for part in SPOTIFY_WARNING.strip().split("\n\n"))
 STEPS = (
     ("1", "Index", "Tempo, key, loudness, energy, mood, vocals and style for every track, about half a second "
                    "each. Saved next to your music, so it happens once."),
@@ -27,6 +34,10 @@ STEPS = (
 def _left(seconds: float) -> str:
     seconds = int(round(seconds))
     return f"about {seconds} s left" if seconds < 90 else f"about {round(seconds / 60)} min left"
+
+
+def _short(text: str, limit: int = 120) -> str:
+    return text if len(text) <= limit else text[:limit - 1].rstrip() + "…"
 
 
 class Progress(Painted):
@@ -139,15 +150,119 @@ class RecentCard(QPushButton):
             QPushButton#recent:hover {{ border-color: {T.VIOLET}; background: {T.RAISED}; }}""")
 
 
+class SpotifyCard(QPushButton):
+    """One of the account's playlists on the Spotify page: its name and how many tracks it holds."""
+
+    def __init__(self, name: str, count: int | None):
+        super().__init__()
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setObjectName("recent")
+        self.setFixedHeight(52)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(16, 6, 16, 6)
+        text = QVBoxLayout()
+        text.setSpacing(2)
+        title = label(name, 12, QFont.Weight.DemiBold)
+        where = label("Spotify doesn't say how many" if count is None else f"{count} tracks", 9, color=T.MUTED)
+        text.addWidget(title)
+        text.addWidget(where)
+        lay.addLayout(text, 1)
+        arrow = label("→", 14, color=T.VIOLET)
+        lay.addWidget(arrow)
+        for w in (title, where, arrow):
+            w.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.setStyleSheet(f"""
+            QPushButton#recent {{ background: {T.PANEL_HI}; border: 1px solid {T.BORDER}; border-radius: 11px;
+                                 padding: 0; text-align: left; }}
+            QPushButton#recent:hover {{ border-color: {T.VIOLET}; background: {T.RAISED}; }}""")
+
+
+class PoolBuild:
+    """Builds a Spotify pool on its own thread and reports it the way an indexer does.
+
+    A pool over a Spotify playlist is network work: reading the playlist, fetching a 30 s clip per
+    track (live/sources/spotify/preview.py), then analysing the clips. It runs off the window thread
+    and reports into a queue of the same events the folder indexer sends - `start`, `done`, `failed`,
+    `fatal`, `finished` - so the indexing page shows it the same way. `result` is what the set needs
+    once it is done: (Library, DeepAnalyzer)."""
+
+    def __init__(self, playlist: str, name: str, limit: int = 200):
+        self.playlist, self.name, self.limit = playlist, name, limit
+        self.events = queue.Queue()
+        self.result = None
+        self.pool = None
+        self.error = None
+        self.tracks = self.todo = 0
+        self._cancelled = False
+        self._thread = threading.Thread(target=self._run, daemon=True, name="spotify-pool")
+
+    def start(self):
+        self._thread.start()
+
+    def cancel(self):
+        """Stop reporting and keep what came in: the pool is dropped when it finishes."""
+        self._cancelled = True
+
+    @property
+    def total(self) -> int:
+        """The clips that have to be listened to, known once the playlist has been listed."""
+        return self.todo
+
+    @property
+    def cancelled(self) -> bool:
+        return self._cancelled
+
+    def _run(self):
+        from ..indexer import DeepAnalyzer
+        from ..library import Library
+        from ..runtime import session_temp
+        from ..sources.pool import preview_pool
+        from ..sources.spotify import ConsentStore, connect, load_policy
+        from ..sources.spotify.fetch import Fetcher
+        from ..sources.spotify.preview import PreviewFetcher
+        from ..sources.store import SourceStore
+        try:
+            settings = ConsentStore()
+            temp = session_temp()
+            source = connect(policy=load_policy(settings=settings), settings=settings,
+                             fetcher=Fetcher(temp.folder("fetch")))
+            store = SourceStore.for_source(source, temp)
+            previews = PreviewFetcher(store.dir / "previews")
+            self.pool = preview_pool(source, self.playlist, previews, store, limit=self.limit,
+                                     progress=self._progress)
+            if self._cancelled or not self.pool.tracks:
+                return
+            analyzer = DeepAnalyzer(store, temp)
+            analyzer.start()  # its imports take a few seconds: done before the first pick
+            self.result = (Library(self.pool.tracks, name=self.name), analyzer)
+        except Exception as e:  # a source error, or the analysis environment missing
+            if not self._cancelled:
+                self.error = str(e) or e.__class__.__name__
+        finally:
+            self.events.put(("finished", {}))
+
+    def _progress(self, kind: str, info: dict):
+        if self._cancelled:
+            return
+        if kind == "start":
+            self.tracks, self.todo = info["tracks"], info["todo"]
+        self.events.put((kind, info))
+
+
 class WelcomeWindow(QMainWindow):
-    ready = Signal(object)  # Playlist, indexed and loaded
+    ready = Signal(object)       # a Playlist from a folder, indexed and loaded
+    ready_set = Signal(object)   # (Library, DeepAnalyzer) for a playlist the window pooled itself
 
     def __init__(self, settings: QSettings | None = None):
         super().__init__()
         self.settings = settings
         self.indexer = None
         self.playlist = None
-        self._done = self._failed = 0
+        self.job = None                 # a PoolBuild, while a Spotify playlist is being pooled
+        self.spotify = None             # the status the Spotify page was last drawn from
+        self.spot = queue.Queue()       # (kind, payload) from the playlist-listing thread
+        self._done = self._failed = self._first = 0   # progress: how much of the work is reported
         self._failures = []
         self._started = 0.0
         self.setAcceptDrops(True)
@@ -161,11 +276,15 @@ class WelcomeWindow(QMainWindow):
         outer.addWidget(self.pages)
         self.home = self._home_page()
         self.index = self._index_page()
+        self.spot_page = self._spotify_page()
         self.pages.addWidget(self.home)
         self.pages.addWidget(self.index)
+        self.pages.addWidget(self.spot_page)
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._poll)
+        self.spot_timer = QTimer(self)
+        self.spot_timer.timeout.connect(self._spot_poll)
         self.setWindowTitle("disko live")
         self.setMinimumSize(1100, 760)
         screen = self.screen().availableGeometry()
@@ -231,6 +350,25 @@ class WelcomeWindow(QMainWindow):
         self.recent = QVBoxLayout()
         self.recent.setSpacing(6)
         lay.addLayout(self.recent)
+
+        lay.addSpacing(18)
+        spot = QFrame()
+        spot.setObjectName("card")
+        sl = QVBoxLayout(spot)
+        sl.setContentsMargins(16, 12, 16, 14)
+        sl.setSpacing(6)
+        sl.addWidget(label("A Spotify playlist", 11, QFont.Weight.DemiBold))
+        spot_help = label("Sign in, then pick one of your playlists. disko lists it and reads a 30 s clip of each "
+                          "track; the whole track is fetched only when it is about to play, and only if you turn "
+                          "Spotify audio on here.", 9.5, color=T.MUTED)
+        spot_help.setWordWrap(True)
+        sl.addWidget(spot_help)
+        use = QPushButton("Use a Spotify playlist…")
+        use.setCursor(Qt.CursorShape.PointingHandCursor)
+        use.setFixedHeight(36)
+        use.clicked.connect(lambda _=False: self.show_spotify())
+        sl.addWidget(use, 0, Qt.AlignmentFlag.AlignLeft)
+        lay.addWidget(spot)
 
         lay.addSpacing(26)
         steps = QHBoxLayout()
@@ -309,6 +447,83 @@ class WelcomeWindow(QMainWindow):
         lay.addSpacing(24)
         return page
 
+    def _spotify_page(self) -> QWidget:
+        page = QFrame()
+        page.setObjectName("panel")
+        lay = self._column(page, 660)
+        lay.addSpacing(36)
+        top = QHBoxLayout()
+        logo = QLabel(f"disko<span style='color:{T.VIOLET}'>.</span>")
+        logo.setFont(T.font(20, QFont.Weight.Bold))
+        top.addWidget(logo)
+        top.addStretch(1)
+        back = QPushButton("Back")
+        back.setObjectName("chip")
+        back.setCursor(Qt.CursorShape.PointingHandCursor)
+        back.clicked.connect(lambda _=False: self.show_home())
+        top.addWidget(back)
+        lay.addLayout(top)
+
+        lay.addSpacing(26)
+        lay.addWidget(label("Spotify", 22, QFont.Weight.DemiBold))
+        self.spot_state = label("", 10, color=T.MUTED)
+        self.spot_state.setWordWrap(True)
+        lay.addWidget(self.spot_state)
+        lay.addSpacing(16)
+
+        self.spot_warning = QFrame()
+        self.spot_warning.setObjectName("card")
+        wl = QVBoxLayout(self.spot_warning)
+        wl.setContentsMargins(16, 14, 16, 14)
+        wl.setSpacing(8)
+        wl.addWidget(label("Before disko reads any Spotify audio", 11, QFont.Weight.DemiBold))
+        for line in WARNING_LINES:
+            part = label(line, 9.5, color=T.MUTED)
+            part.setWordWrap(True)
+            wl.addWidget(part)
+        row = QHBoxLayout()
+        self.spot_on = QPushButton("Turn on Spotify audio")
+        self.spot_on.setObjectName("primary")
+        self.spot_on.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.spot_on.setFixedHeight(38)
+        self.spot_on.clicked.connect(lambda _=False: self._spot_audio(True))
+        row.addWidget(self.spot_on)
+        only = QPushButton("Browse only")
+        only.setCursor(Qt.CursorShape.PointingHandCursor)
+        only.setFixedHeight(38)
+        only.clicked.connect(lambda _=False: self._spot_audio(False))
+        row.addWidget(only)
+        row.addStretch(1)
+        wl.addLayout(row)
+        lay.addWidget(self.spot_warning)
+
+        self.spot_signin = QPushButton("Sign in with Spotify")
+        self.spot_signin.setObjectName("primary")
+        self.spot_signin.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.spot_signin.setFixedHeight(42)
+        self.spot_signin.clicked.connect(lambda _=False: self._spot_sign_in())
+        lay.addWidget(self.spot_signin)
+
+        self.spot_off = QPushButton("Turn Spotify audio off again")
+        self.spot_off.setObjectName("chip")
+        self.spot_off.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.spot_off.clicked.connect(lambda _=False: self._spot_audio(False))
+        lay.addWidget(self.spot_off, 0, Qt.AlignmentFlag.AlignLeft)
+
+        self.spot_note = label("", 10, color=T.WARN)
+        self.spot_note.setWordWrap(True)
+        self.spot_note.hide()
+        lay.addWidget(self.spot_note)
+
+        lay.addSpacing(16)
+        self.spot_list_title = caps("Your playlists")
+        lay.addWidget(self.spot_list_title)
+        self.spot_list = QVBoxLayout()
+        self.spot_list.setSpacing(6)
+        lay.addLayout(self.spot_list)
+        lay.addStretch(1)
+        return page
+
     def _drop_style(self, hot: bool):
         self.drop.setStyleSheet(f"QFrame#drop {{ background: {T.rgba(T.VIOLET, 0.08) if hot else T.PANEL_HI}; "
                                 f"border: 1.5px dashed {T.VIOLET if hot else T.BORDER}; border-radius: 14px; }}")
@@ -333,6 +548,7 @@ class WelcomeWindow(QMainWindow):
     def show_home(self, recent: list | None = None):
         """recent: [(folder, summary)] to show instead of the saved list (for snapshots)."""
         self.timer.stop()
+        self.spot_timer.stop()
         self.pages.setCurrentWidget(self.home)
         clear(self.recent)
         if recent is None:
@@ -347,6 +563,184 @@ class WelcomeWindow(QMainWindow):
         self.show_home()
         self.error.setText(text)
         self.error.show()
+
+    # ------------------------------------------------------------ spotify
+
+    def show_spotify(self, playlists=None, state=None):
+        """The Spotify page: the listener's audio choice, the sign-in, and their playlists.
+
+        `playlists` ([(id, name, tracks)]) and `state` (a GateStatus) are drawn as given instead of
+        asking Spotify and the Keychain, for snapshots."""
+        if playlists is not None and not isinstance(playlists, list):
+            playlists = None            # clicked passes a bool
+        self.timer.stop()
+        self.spot_timer.stop()
+        self.pages.setCurrentWidget(self.spot_page)
+        self._spot_refresh(playlists, state)
+
+    def _spot_refresh(self, playlists=None, state=None):
+        """Draw the page from the stored choice and the sign-in state, then the account's playlists."""
+        from ..sources.spotify import audio_choice, status
+        try:
+            state, choice = state or status(), audio_choice()
+        except Exception as e:          # a Keychain that can't be read, a broken client ID
+            self.spot_state.setText(f"Spotify's settings couldn't be read: {e}")
+            for w in (self.spot_signin, self.spot_warning, self.spot_off, self.spot_list_title):
+                w.hide()
+            return
+        self.spotify = state
+        if not state.authorized:
+            self.spot_state.setText(state.reason)
+            for w in (self.spot_signin, self.spot_warning, self.spot_off, self.spot_list_title):
+                w.hide()
+            return
+        if not state.configured:
+            self.spot_state.setText("Spotify needs your own developer app: a client ID from "
+                                    "developer.spotify.com, then `python -m live.sources.spotify set-client`. "
+                                    "A Premium account is needed to play tracks.")
+        elif not state.signed_in:
+            self.spot_state.setText("Not signed in. disko browses your account only after you sign in.")
+        elif state.audio:
+            self.spot_state.setText(f"Signed in. {choice.summary if choice else 'Spotify audio is on'}. "
+                                    "A track is fetched only as it comes up, one at a time, and nothing is "
+                                    "recorded or kept.")
+        else:
+            self.spot_state.setText("Signed in. Spotify audio is off, so your playlists can be listed but their "
+                                    "tracks can't be played yet.")
+        self.spot_signin.setVisible(state.configured and not state.signed_in)   # nothing to sign in with yet
+        self.spot_signin.setEnabled(True)
+        self.spot_warning.setVisible(state.signed_in and not state.audio)
+        self.spot_off.setVisible(state.audio)
+        self.spot_list_title.setVisible(state.signed_in)
+        if not state.signed_in:
+            clear(self.spot_list)
+            return
+        if playlists is not None:
+            self._spot_playlists(playlists)
+            return
+        self._spot_note("Reading your playlists…", warn=False)
+        threading.Thread(target=self._list_playlists, daemon=True, name="spotify-playlists").start()
+        self.spot_timer.start(300)
+
+    def _list_playlists(self):
+        """Ask Spotify for the account's playlists, on this thread (the window thread draws them)."""
+        from ..sources.spotify import connect, load_policy
+        try:
+            source = connect(policy=load_policy())
+            self.spot.put(("playlists", [(ref.id, ref.name, ref.track_count) for ref in source.playlists()]))
+        except Exception as e:
+            self.spot.put(("list_error", str(e) or e.__class__.__name__))
+
+    def _spot_playlists(self, playlists):
+        clear(self.spot_list)
+        for playlist_id, name, count in playlists:
+            card = SpotifyCard(name, count)
+            card.clicked.connect(lambda _=False, i=playlist_id, n=name: self._spot_pick(i, n))
+            self.spot_list.addWidget(card)
+        self._spot_note("" if playlists else "This account has no playlists to show.", warn=False)
+
+    def _spot_audio(self, on: bool):
+        """Record the listener's own choice, here in the app, dated today (Milestone 2)."""
+        from ..sources.spotify import set_audio
+        set_audio(audio=on)
+        self._spot_refresh()
+
+    def _spot_sign_in(self):
+        from ..sources.spotify import login
+        self.spot_signin.setEnabled(False)
+        self._spot_note("Finish the sign-in in your browser; this page waits for it.", warn=False)
+        def work():
+            try:
+                login()
+                self.spot.put(("signed_in", None))
+            except Exception as e:
+                self.spot.put(("sign_error", str(e) or e.__class__.__name__))
+        threading.Thread(target=work, daemon=True, name="spotify-login").start()
+        self.spot_timer.start(300)
+
+    def _spot_poll(self):
+        while True:
+            try:
+                kind, payload = self.spot.get_nowait()
+            except queue.Empty:
+                return
+            if kind == "playlists":
+                self.spot_timer.stop()
+                self._spot_playlists(payload)
+            elif kind == "signed_in":       # now the choice is asked for, before any audio is read
+                self.spot_timer.stop()
+                self._spot_refresh()
+            elif kind == "sign_error":
+                self.spot_timer.stop()
+                self.spot_signin.setEnabled(True)
+                self._spot_note(f"The sign-in didn't finish: {payload}")
+            else:                           # list_error
+                self.spot_timer.stop()
+                self._spot_note(payload)
+
+    def _spot_note(self, text: str, warn: bool = True):
+        self.spot_note.setText(text)
+        self.spot_note.setStyleSheet(f"color: {T.WARN if warn else T.MUTED};")
+        self.spot_note.setVisible(bool(text))
+
+    def _spot_pick(self, playlist_id: str, name: str):
+        """Pool the playlist (Milestone 4) and hand the set what comes out of it."""
+        from ..sources import Operation
+        from ..sources.spotify import ConsentStore, load_policy
+        if not load_policy(settings=ConsentStore()).allows(Operation.TEMP_AUDIO):
+            self._spot_note("Spotify audio is off, so a track from this playlist couldn't be played. "
+                            "Turning it on is your own choice; it is against Spotify's terms.")
+            return
+        if self.indexer is not None:
+            self.indexer.cancel()
+            self.indexer = None          # the page polls whichever of the two is set, so only one may be
+        self.playlist = None
+        self.job = PoolBuild(playlist_id, name)
+        self._done = self._failed = 0
+        self._failures, self._first = [], 0
+        clear(self.feed)
+        self.note.hide()
+        self.back.hide()
+        self.cancel.show()
+        self.heading.setText(f"Getting “{name}” ready")
+        self.where.setText("reading a 30 s clip of each track, then listening to every clip once")
+        self.explain.setText("Tempo, key, loudness, energy, mood, vocals and style, measured from a 30 s clip of "
+                             "each track. The whole track is fetched and mapped later, one at a time, when it is "
+                             "about to play.")
+        self._started = time.time()
+        self._update_count()
+        self.pages.setCurrentWidget(self.index)
+        self.job.start()
+        self.timer.start(80)
+
+    def _spot_finish(self):
+        job = self.job
+        self._update_count()
+        self.progress.set(1.0)
+        self.cancel.hide()
+        self.back.show()
+        self.job = None
+        if job.error:
+            self.heading.setText("The playlist couldn't be read")
+            self.note.setText(job.error)
+            self.note.show()
+            return
+        if job.result is None:
+            self.heading.setText("No tracks to mix")
+            self.note.setText("Nothing in this playlist could be analysed, so there is no set to run."
+                              if not job.cancelled else "Stopped.")
+            self.note.show()
+            return
+        library, analyzer = job.result
+        self.heading.setText(f"“{job.name}” is ready: {len(library.tracks)} tracks")
+        self.eta.setText("")
+        self.explain.setText("Starting the set…")
+        left = [f"{info.artist} – {_short(info.title, 40)} ({why})" for info, why in job.pool.skipped[:4]]
+        if left:
+            more = f" and {len(job.pool.skipped) - 4} more" if len(job.pool.skipped) > 4 else ""
+            self.note.setText(f"{job.pool.summary()}; left out: " + "; ".join(left) + more)
+            self.note.show()
+        QTimer.singleShot(2400 if left else 900, lambda: self.ready_set.emit(job.result))
 
     # ------------------------------------------------------------ opening a folder
 
@@ -375,6 +769,7 @@ class WelcomeWindow(QMainWindow):
             self._show_error(f"No audio files in “{pl.name}”. disko reads MP3, WAV, FLAC, AIFF, Ogg and M4A.")
             return
         self._remember(str(pl.folder))
+        self.job = None                  # a Spotify pool that was running is not this folder's progress
         self.playlist = pl
         self.indexer = FastIndexer(pl)
         self._done = len(pl.files) - len(self.indexer.todo)
@@ -397,13 +792,15 @@ class WelcomeWindow(QMainWindow):
     def _cancel(self):
         if self.indexer is not None:
             self.indexer.cancel()  # what's done is kept: next time only the rest is analyzed
+        if self.job is not None:
+            self.job.cancel()      # the clips already analyzed stay on disk, as for a folder
         self.show_home()
 
     def _update_count(self):
-        total = len(self.playlist.files)
+        total = self.job.total if self.job is not None else len(self.playlist.files)
         seen = self._done + self._failed
-        self.progress.set(seen / total if total else 1.0)
-        self.count.setText(f"{seen} of {total}")
+        self.progress.set(seen / total if total else (0.0 if self.job is not None else 1.0))
+        self.count.setText(f"{seen} of {total}" if total else "reading the playlist…")
         new = seen - (total - self._first)
         if self._first and 3 <= new < self._first:
             per = (time.time() - self._started) / new
@@ -424,11 +821,16 @@ class WelcomeWindow(QMainWindow):
             item.widget().deleteLater()
 
     def _poll(self):
-        while self.indexer is not None:
+        watched = self.job if self.job is not None else self.indexer
+        while watched is not None:
             try:
-                kind, msg = self.indexer.events.get_nowait()
+                kind, msg = watched.events.get_nowait()
             except queue.Empty:
-                break
+                return
+            if kind == "start":       # a Spotify pool: how many clips have to be listened to
+                self._first = msg["todo"]
+                self._update_count()
+                continue
             if kind == "done":
                 self._done += 1
                 title, artist = msg.get("title"), msg.get("artist")
@@ -449,9 +851,13 @@ class WelcomeWindow(QMainWindow):
                 return
             elif kind == "finished":
                 self.timer.stop()
-                self._finish()
+                if self.job is not None:
+                    self._spot_finish()
+                else:
+                    self._finish()
                 return
             self._update_count()
+            watched = self.job if self.job is not None else self.indexer
 
     def _finish(self):
         pl = self.playlist
@@ -482,4 +888,6 @@ class WelcomeWindow(QMainWindow):
     def closeEvent(self, e):
         if self.indexer is not None:
             self.indexer.cancel()
+        if self.job is not None:
+            self.job.cancel()
         super().closeEvent(e)
