@@ -4,7 +4,10 @@
     .venv-live/bin/python -m live --playlist ~/Music/set   # open that folder straight away
     .venv-live/bin/python -m live --house                  # the house test set, analyzed in full in advance
     .venv-live/bin/python -m live --fake 12                # a synthetic catalog (live/sources/fake.py): no real music
-    .venv-live/bin/python -m live --playlist DIR --control # also take commands from live.ctl / Hermes (live/control.py)
+    .venv-live/bin/python -m live --beatport chart:1234     # a Beatport list as the library (needs a sign-in;
+                                                            # DISKO_BEATPORT_STREAMING=1 also plays it)
+    .venv-live/bin/python -m live --playlist DIR --no-control  # don't take commands from live.ctl (live/control.py);
+                                                               # the control socket is on by default
     .venv-live/bin/python -m live --headless --playlist DIR   # no window: Kev DJs, controlled through live.ctl
     .venv-live/bin/python -m live --snapshot out.png --scenario mix   # render offscreen, no sound
 """
@@ -145,7 +148,7 @@ def schedule_dev(app, win, args):
 def start_control(session, tcp, into: dict):
     from .control import ControlServer
     if "control" in into:  # a second window takes the commands over
-        into["control"].close()
+        into.pop("control").close()
     server = ControlServer(session, tcp=tcp).start()
     into["control"] = server
     where = f" and {server.tcp_address[0]}:{server.tcp_address[1]}" if server.tcp_address else ""
@@ -157,6 +160,7 @@ def headless(args, tcp) -> int:
     """Kev DJs with no window; the set is started and steered through the control interface."""
     import signal
 
+    from .control import write_install_record
     from .engine import Engine
     from .indexer import DeepAnalyzer, FastIndexer
     from .kev import Kev
@@ -175,6 +179,8 @@ def headless(args, tcp) -> int:
     analyzer = None
     if args.fake:
         library = fake_library(args.fake)
+    elif args.beatport:
+        library = beatport_library(args.beatport, args.beatport_limit)
     elif args.playlist:
         playlist = Playlist(args.playlist)
         indexer = FastIndexer(playlist)
@@ -193,8 +199,9 @@ def headless(args, tcp) -> int:
     elif args.house:
         library = Library()
     else:
-        print("--headless needs --playlist DIR, --house or --fake N", file=sys.stderr)
+        print("--headless needs --playlist DIR, --beatport LIST, --house or --fake N", file=sys.stderr)
         return 2
+    write_install_record()
     kev = Kev()
     engine = Engine()
     session = Session(library, engine, kev, prepare, prepare_synced, analyzer=analyzer)  # owned by this thread
@@ -230,14 +237,35 @@ def fake_library(n: int):
     return Library(src.library_tracks(), name=src.label)
 
 
+def beatport_library(list_id: str, limit: int):
+    """A library from a Beatport playlist or chart, as a bounded candidate pool (metadata only until
+    a track is played, when its stream is decoded). Reading the audio needs the streaming plan."""
+    from .library import Library
+    from .sources.beatport import connect, streaming_enabled
+    from .sources.pool import candidate_pool
+    source = connect()
+    pool = candidate_pool(source, list_id, limit=limit)
+    if not streaming_enabled():
+        print("note: DISKO_BEATPORT_STREAMING isn't set, so playing a track will be refused; set it to 1 "
+              "once your Beatport Streaming plan is active", file=sys.stderr)
+    return Library(pool.tracks, name=f"Beatport {list_id}")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--playlist", help="open this folder instead of showing the welcome screen")
     ap.add_argument("--house", action="store_true", help="use the house test set (data/house), skipping the welcome screen")
     ap.add_argument("--fake", type=int, metavar="N",
                     help="use a synthetic catalog of N generated tracks (tests the source/policy path; no real music)")
+    ap.add_argument("--beatport", metavar="LIST",
+                    help="run a set from a Beatport list (my:ID, catalog:ID or chart:ID); needs a sign-in "
+                         "and DISKO_BEATPORT_STREAMING=1 to play")
+    ap.add_argument("--beatport-limit", type=int, default=100, metavar="N",
+                    help="how many tracks to take from the Beatport list (default 100)")
     ap.add_argument("--control", action="store_true",
-                    help="accept commands on the local control socket (~/.disko/control.sock, token-protected)")
+                    help="accept commands on the local control socket (~/.disko/control.sock, this user only); "
+                         "on by default, kept for compatibility")
+    ap.add_argument("--no-control", action="store_true", help="don't serve the control socket")
     ap.add_argument("--control-tcp", metavar="HOST:PORT",
                     help="also accept them over TCP (token-protected; for a controller in a container)")
     ap.add_argument("--headless", action="store_true", help="no window: Kev DJs, controlled with python -m live.ctl")
@@ -309,6 +337,8 @@ def main():
             win.close()
         return
 
+    from .control import write_install_record
+    write_install_record()
     kev = Kev()
     live = {}
 
@@ -322,11 +352,16 @@ def main():
         win.show()
         schedule_dev(app, win, args)
         live.update(win=win, engine=engine)
-        if args.control or tcp:
-            start_control(win.session, tcp, live)
+        if not args.no_control or tcp:
+            try:
+                start_control(win.session, tcp, live)
+            except (RuntimeError, OSError) as e:  # on by default, so it mustn't keep the window from opening
+                print(f"note: control is off ({e})", file=sys.stderr)
 
     if args.fake:
         open_set(fake_library(args.fake))
+    elif args.beatport:
+        open_set(beatport_library(args.beatport, args.beatport_limit))
     elif args.house:
         open_set(Library())
     else:

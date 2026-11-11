@@ -1,0 +1,13 @@
+# .venv-live: the app (python -m live). Installed by scripts/setup.sh:
+#   uv venv .venv-live --python 3.14 && uv pip install --python .venv-live -r requirements/live.txt
+# Floors are the versions this was developed with; ceilings are the next major release.
+pyside6>=6.11,<7
+sounddevice>=0.5,<1
+pedalboard>=0.9,<1
+numba>=0.68,<1
+numpy>=2.5,<3
+scipy>=1.18,<2
+soundfile>=0.14,<1
+soxr>=1.1,<2
+pandas>=3.0,<4
+httpx>=0.28,<1

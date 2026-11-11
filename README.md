@@ -28,9 +28,17 @@ Effects sit on top of a technique, at most two per mix: **Riser**, **Loop Roll**
 
 ## Running it
 
+On an Apple Silicon Mac with [uv](https://docs.astral.sh/uv/) installed:
+
 ```bash
-.venv-live/bin/python -m live
+./scripts/setup.sh --kev-weights   # once: the venvs, Kev and its weights, the Essentia models
+bin/disko                          # open the app
+bin/disko app --install            # optional: disko.app in ~/Applications, for the Dock
 ```
+
+`bin/disko doctor` checks that every piece is in place and prints the command that fixes what isn't. `bin/disko help` lists the rest: `bin/disko headless FOLDER` plays a folder with no window, and `bin/disko ctl status` (or `start`, `pause`, `energy up`, ...) steers a running set. To type just `disko`, link it onto your PATH: `ln -s "$PWD/bin/disko" ~/.local/bin/disko`.
+
+disko.app is a launcher for this checkout, not a standalone copy. It runs `.venv-live` from here, and the checkout's path is fixed when the app is built, so rebuild it (`bin/disko app --install`) after moving the checkout. It logs to `~/Library/Logs/disko.log`.
 
 The app opens on a welcome screen. Choose or drop a playlist folder, wait for the fast pass, then pick an opening track. Kev takes over from there.
 
@@ -39,7 +47,7 @@ The app opens on a welcome screen. Choose or drop a playlist folder, wait for th
 - **Skip to the mix** jumps to 8 bars before the queued transition; **Pick again** asks Kev for another track.
 - **Space** plays and pauses; **Esc** goes back.
 
-Other ways in:
+Other ways in (`bin/disko` takes the same flags, e.g. `bin/disko --playlist ~/Music/set`):
 
 ```bash
 .venv-live/bin/python -m live --playlist ~/Music/set
@@ -53,20 +61,20 @@ The first skips the welcome screen. The second renders the window offscreen to a
 
 ### Controlling a set from elsewhere
 
-Start disko with `--control` (or run it without a window: `--headless --playlist DIR`) and steer it from a terminal or from Hermes:
+While disko is open it takes commands on a local socket (`--no-control` turns that off). Run it without a window with `disko headless DIR`, and steer either from a terminal or from Hermes:
 
 ```bash
-.venv-live/bin/python -m live --headless --playlist ~/Music/set
-.venv-live/bin/python -m live.ctl start
-.venv-live/bin/python -m live.ctl energy up
-.venv-live/bin/python -m live.ctl status
+bin/disko headless ~/Music/set
+bin/disko ctl start
+bin/disko ctl energy up
+bin/disko ctl status
 ```
 
-The control socket lives in `~/.disko`, readable only by you, and every request needs the token written next to it. The Hermes plugin is in `integrations/hermes/disko`. `python -m live --fake 12` runs everything on a synthetic catalog with no real music.
+The control socket lives in `~/.disko`, readable only by you, and disko only answers a process running as the same macOS user. Nothing listens on the network unless you pass `--control-tcp HOST:PORT`, which needs the token disko then writes to `~/.disko/control.token`. Each start also records where disko is installed in `~/.disko/install.json`, so the Hermes plugin ([hermes-disko](https://github.com/emirkaan5/hermes-disko)) can open disko for you; the copy in `integrations/hermes/disko` is the older draft it replaced. `python -m live --fake 12` runs everything on a synthetic catalog with no real music.
 
-### Beatport (browsing only)
+### Beatport
 
-disko can sign in to Beatport and read your playlists, Beatport charts and catalog metadata (tempo, Camelot key, genre, length). It can't play Beatport audio: the stream interface isn't documented and Beatport's terms decide whether disko may decode it. See `BEATPORT_INTEGRATION_PLAN.md`.
+disko can sign in to Beatport and read your playlists, Beatport charts and catalog metadata (tempo, Camelot key, genre, length). With an active Beatport Streaming plan it can also play tracks: set `DISKO_BEATPORT_STREAMING=1` and a track's audio comes from Beatport's streaming endpoint and is decoded through ffmpeg in memory. Without that plan disko browses only. See `BEATPORT_INTEGRATION_PLAN.md`.
 
 It needs two things:
 
@@ -78,12 +86,14 @@ It needs two things:
 
    Then set `DISKO_BEATPORT_CLIENT_ID` (and `DISKO_BEATPORT_CLIENT_SECRET` if Beatport gave you one). Alternatively, `python -m live.sources.beatport set-client` stores them in the Keychain; the `.env` values win if both are set. Sign-in tokens always go in the Keychain.
 
-   Beatport's docs page has its own client ID, which some community tools copy. disko refuses it.
+   Beatport's docs page has its own client ID, which some community tools copy. disko refuses it unless you set `DISKO_BEATPORT_ALLOW_BORROWED_CLIENT=1`, which is only meant for trying the system before a real client ID arrives. That client registers no loopback callback, so `login` sends the browser to the docs client's own `https://api.beatport.com/v4/auth/o/post-message/` redirect instead, and `login --no-browser` prints the link and asks you to paste the code back (grab it from the redirect with your browser's DevTools, Network tab, "Preserve log" on).
 2. **A sign-in:**
 
    ```bash
    .venv-live/bin/python -m live.sources.beatport login
    ```
+
+   With a borrowed client ID, use `login --no-browser` and paste the code when asked.
 
 Then:
 
@@ -95,32 +105,48 @@ Then:
 .venv-live/bin/python -m live.sources.beatport logout
 ```
 
-disko uses Beatport for browsing, track details and passing those details to Kev on your Mac. To restrict that, add `live/sources/capabilities/beatport.json` (the format is in `live/sources/policy.py`); if the file exists, it replaces the default.
+disko uses Beatport for browsing, track details and passing those details to Kev on your Mac. To restrict that, add `live/sources/capabilities/beatport.json` (the format is in `live/sources/policy.py`); if the file exists, it replaces the default. `DISKO_BEATPORT_STREAMING=1` widens the default to allow decoding, analyzing and mixing the stream.
+
+To play a set from a Beatport list (needs the streaming plan), pass it to `live`:
+
+```bash
+DISKO_BEATPORT_STREAMING=1 .venv-live/bin/python -m live --beatport chart:1234
+```
 
 The v4 docs don't show response formats, so check the field mapping (`track_info` in `live/sources/beatport/source.py`) against the `--raw` output from your first real call. `tests/fake_beatport.py` is the stand-in server the tests use. Run it on its own and pass its address with `--api` to try the commands without Beatport.
 
 ## Setup
 
-disko runs on Apple Silicon Macs: allin1 and Kev both use MLX. It uses Python 3.14 and [uv](https://docs.astral.sh/uv/), with one venv per job, because essentia-tensorflow clashes with plain essentia.
-
-| Venv | Used for | Main packages |
-|---|---|---|
-| `.venv-live` | The app | pyside6, sounddevice, pedalboard, numba, scipy, soundfile, httpx |
-| `.venv-essentia-tf` | Fast pass | essentia-tensorflow |
-| `.venv-audio` | Deep pass, house-set scripts | all-in-one-mlx, demucs, essentia, librosa |
-| `.venv` | Benchmarks | laya, httpx, torch |
-
-For example:
+disko runs on Apple Silicon Macs: allin1 and Kev both use MLX. It needs [uv](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/install.sh | sh`); ffmpeg (`brew install ffmpeg`) is optional and only used for AAC/M4A files and Beatport streams. Then:
 
 ```bash
-uv venv .venv-live --python 3.14 && uv pip install --python .venv-live pyside6 sounddevice pedalboard numba scipy soundfile httpx
+./scripts/setup.sh                 # or: bin/disko setup
 ```
+
+It sets up whatever is missing and leaves the rest alone, so it is safe to run again. It finishes by running `bin/disko doctor`. Options:
+
+- `--dry-run` prints every step it would take and changes nothing.
+- `--kev-weights` also downloads Kev's weights (several GB, once). Without it, setup prints the command.
+- `--upgrade` re-installs the requirements into venvs that already exist. It never deletes a venv.
+
+What it does, which is also how to do it by hand:
+
+**Venvs.** disko uses Python 3.14 with one venv per job, because essentia-tensorflow clashes with plain essentia. Each venv's packages are listed in `requirements/`, and setup creates any venv that is missing:
+
+```bash
+uv venv .venv-live --python 3.14 && uv pip install --python .venv-live -r requirements/live.txt
+```
+
+| Venv | Used for | Requirements | Main packages |
+|---|---|---|---|
+| `.venv-live` | The app | `requirements/live.txt` | pyside6, sounddevice, pedalboard, numba, scipy, soundfile, soxr, pandas, httpx |
+| `.venv-essentia-tf` | Fast pass | `requirements/fast.txt` | essentia-tensorflow |
+| `.venv-audio` | Deep pass, house-set scripts | `requirements/audio.txt` | all-in-one-mlx, demucs, essentia, librosa |
+| `.venv` | Benchmarks (not set up by setup.sh) | | laya, httpx, torch |
 
 `DISKO_FAST_PYTHON` and `DISKO_DEEP_PYTHON` point the app at other interpreters for the two passes.
 
-**Essentia models.** Download the `.pb` and `.json` files for these models from [essentia.upf.edu/models](https://essentia.upf.edu/models/) into `data/house/models/essentia/`: `discogs-effnet-bs64-1`, `msd-musicnn-1`, `genre_discogs400-discogs-effnet-1`, `danceability-discogs-effnet-1`, `voice_instrumental-discogs-effnet-1` and `emomusic-msd-musicnn-2`. They're CC BY-NC-SA, so non-commercial use only.
-
-**Kev.** Clone [jaredpalmer/kev](https://github.com/jaredpalmer/kev) into `external/kev`. When no server is running, the app starts Kev-4B on port 8009 and stops it again on exit. It starts it offline, though, so run the server once by hand to download the weights:
+**Kev.** Setup clones [jaredpalmer/kev](https://github.com/jaredpalmer/kev) into `external/kev` and builds its environment with `uv sync --extra serve`. When no server is running, the app starts Kev-4B on port 8009 and stops it again on exit. It starts it offline, though, so the weights must already be in the Hugging Face cache. `--kev-weights` fetches them by running the server once until it answers; by hand, run this and press Ctrl-C once it is serving:
 
 ```bash
 cd external/kev && uv run --extra serve python -m kev.serve --run jaredpalmer/kev-4b --port 8009
@@ -128,11 +154,17 @@ cd external/kev && uv run --extra serve python -m kev.serve --run jaredpalmer/ke
 
 `KEV_URL` and `KEV_RUN` choose a different server or checkpoint.
 
+**Essentia models.** Setup downloads the `.pb` and `.json` files for these models from [essentia.upf.edu/models](https://essentia.upf.edu/models/) into `data/house/models/essentia/`, where the fast pass reads them: `discogs-effnet-bs64-1`, `msd-musicnn-1`, `genre_discogs400-discogs-effnet-1`, `danceability-discogs-effnet-1`, `voice_instrumental-discogs-effnet-1` and `emomusic-msd-musicnn-2`. They're CC BY-NC-SA, so non-commercial use only.
+
 ## Repository
 
 | Path | What's there |
 |---|---|
 | `live/` | The app: analysis workers, Kev's decisions (`dj.py`), techniques and effects (`mixes.py`), DSP and the audio engine, and the PySide6 UI |
+| `bin/disko` | The one command: the app, `headless`, `ctl`, `setup`, `app` and `doctor` |
+| `scripts/setup.sh` | Sets up the venvs, Kev and the Essentia models; safe to run again |
+| `requirements/` | Each venv's packages |
+| `scripts/make_app.sh`, `scripts/make_icon.py` | Build `dist/disko.app` and its icon |
 | `scripts/render_mix.py` | Renders one transition to a WAV for listening |
 | `scripts/audit_cues.py` | Counts how many cue points land on a phrase start |
 | `scripts/house/` | Builds the house test set: 568 Creative Commons tracks from FMA and MTG-Jamendo, fully analysed |

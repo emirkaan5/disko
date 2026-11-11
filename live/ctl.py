@@ -1,4 +1,6 @@
-"""Control a running disko from the terminal (it must be started with --control or --headless).
+"""Control a running disko from the terminal (the window app serves control unless started with
+--no-control; --headless always does). The local socket needs no token: disko checks that you are
+the user running it. A TCP address (--url) needs the token from ~/.disko/control.token.
 
     .venv-live/bin/python -m live.ctl status
     .venv-live/bin/python -m live.ctl start ["part of a title"]
@@ -19,7 +21,8 @@ def main(argv=None) -> int:
     ap.add_argument("command", choices=["status", "start", "pause", "resume", "stop", "pick-again", "energy", "tracks"])
     ap.add_argument("arg", nargs="?", help="start: a track; energy: up/hold/down; tracks: a search")
     ap.add_argument("--url", help="a TCP control address (http://host:port) instead of the local socket")
-    ap.add_argument("--token", help="the token for --url (default: read from ~/.disko/control.token)")
+    ap.add_argument("--token", help="the token for --url (default: read from ~/.disko/control.token); "
+                                    "not used on the local socket")
     args = ap.parse_args(argv)
     client = Client(url=args.url, token=args.token)
     if args.command == "status":

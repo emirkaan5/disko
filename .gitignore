@@ -41,3 +41,6 @@ results/live/
 
 # Live app snapshots
 out.png
+
+# The macOS app bundle (scripts/make_app.sh)
+dist/

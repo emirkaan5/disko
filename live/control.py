@@ -2,11 +2,17 @@
 (BEATPORT_INTEGRATION_PLAN.md, Milestone 4).
 
 The interface is small HTTP+JSON over a Unix socket in ~/.disko (or $DISKO_CONTROL_DIR): the
-folder is the user's alone (0700), the socket and its token file are 0600, and every request
-carries the token as a bearer header. Nothing listens on the network unless a TCP address is
-given explicitly (for a controller in a container, which can't reach a Unix socket on the Mac);
-the token is required there too. A fresh token is written each time disko starts, so a stale one
-stops working after a restart.
+folder is the user's alone (0700) and the socket is 0600. On top of the file modes, every
+connection is checked against the kernel's record of who opened it (LOCAL_PEERCRED on macOS,
+SO_PEERCRED on Linux): only a process running as the same user is served, and if the kernel
+can't say, the request is refused. No token is used on the socket.
+
+Nothing listens on the network unless a TCP address is given explicitly (for a controller in a
+container, which can't reach a Unix socket on the Mac). TCP has no peer identity, so there every
+request carries a bearer token, written to control.token (0600) only when TCP is on. A fresh token
+is made each time disko starts, so a stale one stops working after a restart.
+
+Each start also records where disko is installed (install.json), so tools can find and launch it.
 
 Requests are handled one at a time and every state change runs on the session's owner thread
 (Session.call), so two controllers can't interleave half a command.
@@ -24,6 +30,8 @@ import os
 import secrets
 import socket
 import socketserver
+import struct
+import sys
 import threading
 from concurrent.futures import TimeoutError as FutureTimeout
 from http.server import BaseHTTPRequestHandler
@@ -33,7 +41,7 @@ from urllib.parse import parse_qs, urlparse
 from .session import SessionError
 
 CONTROL_DIR = Path(os.environ.get("DISKO_CONTROL_DIR", Path.home() / ".disko"))
-SOCKET_NAME, TOKEN_NAME = "control.sock", "control.token"
+SOCKET_NAME, TOKEN_NAME, INSTALL_NAME = "control.sock", "control.token", "install.json"
 MAX_BODY = 4096
 MAX_SOCKET_PATH = 103  # macOS limits a Unix socket's path to 104 bytes, the terminating zero included
 TIMEOUT_S = 15.0
@@ -74,9 +82,16 @@ class _Handler(BaseHTTPRequestHandler):
             self.close_connection = True
             return self._reply(413, {"error": "request too large"})
         raw = self.rfile.read(length) if length else b""  # read it all before answering, whatever the answer
-        sent = self.headers.get("Authorization", "")
-        if not hmac.compare_digest(sent.encode(), f"Bearer {server.token}".encode()):
-            return self._reply(401, {"error": "missing or wrong token"})
+        if self.server.local:  # who is on the other end, from the kernel; any Authorization header is ignored
+            uid = peer_uid(self.connection)
+            if uid is None:
+                return self._reply(401, {"error": "can't tell which user is connecting, so the request is refused"})
+            if uid != os.getuid():
+                return self._reply(401, {"error": "only the user running disko can control it"})
+        else:
+            sent = self.headers.get("Authorization", "")
+            if not hmac.compare_digest(sent.encode(), f"Bearer {server.token}".encode()):
+                return self._reply(401, {"error": "missing or wrong token"})
         url = urlparse(self.path)
         route = ROUTES.get((method, url.path))
         if route is None:
@@ -106,10 +121,32 @@ class _Handler(BaseHTTPRequestHandler):
         self._handle("POST")
 
 
+def peer_uid(sock) -> int | None:
+    """The effective uid of the process at the other end of a Unix socket, or None if unknown."""
+    if sock.family != socket.AF_UNIX:  # level 0 means IPPROTO_IP on other sockets
+        return None
+    try:
+        if sys.platform == "darwin":  # struct xucred: u_int cr_version, uid_t cr_uid, short cr_ngroups, gid_t[16]
+            version, uid = struct.unpack_from("=II", sock.getsockopt(0, 0x001, 76))  # SOL_LOCAL, LOCAL_PEERCRED
+            return uid if version == 0 else None  # XUCRED_VERSION
+        if hasattr(socket, "SO_PEERCRED"):  # struct ucred: pid_t pid, uid_t uid, gid_t gid
+            _, uid, _ = struct.unpack("=iIi", sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+            return uid
+    except (OSError, struct.error):
+        pass
+    return None
+
+
 class _UnixServer(socketserver.UnixStreamServer):
+    local = True  # requests are checked by peer uid
+
     def get_request(self):
         request, _ = super().get_request()
         return request, ("local", 0)  # BaseHTTPRequestHandler expects a (host, port) client address
+
+
+class _TCPServer(socketserver.TCPServer):
+    local = False  # no peer identity over TCP: requests need the token
 
 
 class ControlServer:
@@ -142,16 +179,14 @@ class ControlServer:
         unix.control = self
         self._servers.append(unix)
         try:
+            token_file = self.folder / TOKEN_NAME
             if self.tcp is not None:
-                tcp = socketserver.TCPServer(self.tcp, _Handler)
+                tcp = _TCPServer(self.tcp, _Handler)
                 tcp.control = self
                 self._servers.append(tcp)
-            token_file = self.folder / TOKEN_NAME
-            tmp = token_file.with_suffix(".tmp")
-            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-            with os.fdopen(fd, "w") as f:
-                f.write(self.token)
-            os.replace(tmp, token_file)
+                _write_private(token_file, self.token)
+            else:
+                token_file.unlink(missing_ok=True)  # an older run's: nothing here uses it any more
         except Exception:
             for server in self._servers:
                 server.server_close()
@@ -178,6 +213,31 @@ class ControlServer:
                 token_file.unlink()
         except OSError:
             pass
+
+
+def _write_private(path: Path, text: str):
+    """Write a 0600 file atomically: readers see the old content or the new, never half of it."""
+    tmp = path.with_suffix(".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(text)
+    os.replace(tmp, path)
+
+
+def write_install_record(folder: Path | None = None) -> Path | None:
+    """Record where this disko lives and which python runs it, for tools that launch it. Never raises:
+    a missing record mustn't stop the app."""
+    folder = Path(folder or CONTROL_DIR)
+    record = {"version": 1, "root": str(Path(__file__).resolve().parent.parent),  # the folder holding live/
+              "python": sys.executable}  # not resolved: a venv's python is a symlink to the base one
+    try:
+        folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+        path = folder / INSTALL_NAME
+        _write_private(path, json.dumps(record, indent=2) + "\n")
+        return path
+    except OSError as e:
+        print(f"note: couldn't record the install in {folder} ({e})", file=sys.stderr)
+        return None
 
 
 def _alive(path: Path) -> bool:
@@ -210,7 +270,8 @@ class _UnixConnection(http.client.HTTPConnection):
 
 
 class Client:
-    """Talks to a running disko. Errors come back as (status code, {"error": ...})."""
+    """Talks to a running disko. Errors come back as (status code, {"error": ...}). Over the local
+    socket no token is sent (the server checks the user); over TCP (url=) the token is needed."""
 
     def __init__(self, folder: Path | None = None, url: str | None = None, token: str | None = None,
                  timeout: float = TIMEOUT_S + 5):
@@ -228,15 +289,18 @@ class Client:
 
     def request(self, method: str, path: str, body: dict | None = None) -> tuple:
         conn = self._connection()  # first, so "not running" wins over "no token"
-        token = self._token
-        if token is None:
-            try:
-                token = (self.folder / TOKEN_NAME).read_text().strip()
-            except OSError:
-                raise ControlUnavailable(f"no control token in {self.folder}") from None
+        headers = {}
+        if self.url:
+            token = self._token
+            if token is None:
+                try:
+                    token = (self.folder / TOKEN_NAME).read_text().strip()
+                except OSError:
+                    conn.close()
+                    raise ControlUnavailable(f"no control token in {self.folder}") from None
+            headers["Authorization"] = f"Bearer {token}"
         try:
             data = json.dumps(body).encode() if body is not None else None
-            headers = {"Authorization": f"Bearer {token}"}
             if data is not None:
                 headers["Content-Type"] = "application/json"
             conn.request(method, path, body=data, headers=headers)
