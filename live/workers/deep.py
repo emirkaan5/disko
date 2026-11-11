@@ -9,12 +9,18 @@ later. Writes <out>/<id>.allin1.json and <out>/<id>.stems.json.
 Reads one JSON request per line on stdin ({"id", "path", "out"}, and optionally "tmp": the folder to
 keep the stems in while they're measured, such as the app's session temp folder), answers each with a JSON line on
 stdout ({"event": "done" | "failed", "id", ...}), and exits when stdin closes, so it never outlives
-the app. Runs in the audio venv (allin1 on Apple's MLX):
+the app. Runs in the audio venv:
 
     .venv-audio/bin/python live/workers/deep.py
+
+Two backends give the same files. On an Apple Silicon Mac it is all-in-one-mlx on Apple's MLX; anywhere
+else it is upstream allin1 on PyTorch (CUDA when there is a GPU, else the CPU, much slower), with
+live/workers/natten_torch standing in for the NATTEN build allin1 would otherwise need.
+DISKO_DEEP_BACKEND=mlx|torch overrides the choice.
 """
 import json
 import os
+import platform
 import sys
 import tempfile
 import time
@@ -28,6 +34,29 @@ STEMS = ("drums", "bass", "vocals", "other")
 # MLX keeps freed GPU buffers cached up to its memory limit, starving everything else (Kev runs on
 # the same GPU): cap the cache and empty it after each track.
 MLX_CACHE_GB = 4
+NATTEN_TORCH = Path(__file__).resolve().parent / "natten_torch"
+
+
+def backend() -> str:
+    chosen = os.environ.get("DISKO_DEEP_BACKEND")
+    if chosen in ("mlx", "torch"):
+        return chosen
+    return "mlx" if sys.platform == "darwin" and platform.machine() == "arm64" else "torch"
+
+
+def load(name: str):
+    """(allin1 module, extra analyze() arguments, what to run after each track) for the backend."""
+    if name == "mlx":
+        import allin1_mlx
+        import mlx.core as mx
+        mx.set_cache_limit(MLX_CACHE_GB << 30)
+        return allin1_mlx, {}, mx.clear_cache
+    sys.path.insert(0, str(NATTEN_TORCH))  # before any installed NATTEN, whose API allin1 can't use
+    import allin1
+    import torch
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    after = torch.cuda.empty_cache if device == "cuda" else (lambda: None)
+    return allin1, {"device": device, "multiprocess": False}, after
 
 
 def bar_levels(stem_dir: Path, downbeats: list, duration: float) -> dict:
@@ -59,12 +88,12 @@ def write(dest: Path, data: dict):
     os.replace(tmp, dest)
 
 
-def analyze(allin1_mlx, path: Path, out: Path, track_id: str, tmp_root: str | None = None):
+def analyze(allin1, path: Path, out: Path, track_id: str, tmp_root: str | None = None, **options):
     with tempfile.TemporaryDirectory(prefix="disko-deep-", dir=tmp_root) as tmp:
         tmp = Path(tmp)
         # No out_dir: with keep_byproducts, all-in-one-mlx 1.0.14 saves its JSON into the stems
         # folder instead, so we write the results ourselves.
-        r = allin1_mlx.analyze([path], demix_dir=tmp / "demix", spec_dir=tmp / "spec", keep_byproducts=True)
+        r = allin1.analyze([path], demix_dir=tmp / "demix", spec_dir=tmp / "spec", keep_byproducts=True, **options)
         r = r[0] if isinstance(r, list) else r
         stem_dir = tmp / "demix" / "htdemucs" / Path(r.path).stem  # allin1 resolves links, so not path.stem
         duration = float(sf.info(str(stem_dir / "drums.wav")).duration)  # the stems are WAVs whatever the input
@@ -90,9 +119,7 @@ def main():
         except BrokenPipeError:  # the app is gone
             os._exit(0)
 
-    import allin1_mlx
-    import mlx.core as mx
-    mx.set_cache_limit(MLX_CACHE_GB << 30)
+    allin1, options, after_each = load(backend())
     say(event="ready")
     for line in sys.stdin:
         if not line.strip():
@@ -101,13 +128,13 @@ def main():
         start = time.time()
         say(event="started", id=req["id"])
         try:
-            bars = analyze(allin1_mlx, Path(req["path"]), Path(req["out"]), req["id"], req.get("tmp"))
+            bars = analyze(allin1, Path(req["path"]), Path(req["out"]), req["id"], req.get("tmp"), **options)
             say(event="done", id=req["id"], bars=bars, seconds=round(time.time() - start, 1))
         except Exception as e:
             traceback.print_exc()
             say(event="failed", id=req["id"], error=f"{type(e).__name__}: {e}")
         finally:
-            mx.clear_cache()
+            after_each()
 
 
 if __name__ == "__main__":

@@ -43,7 +43,8 @@ from .session import SessionError
 CONTROL_DIR = Path(os.environ.get("DISKO_CONTROL_DIR", Path.home() / ".disko"))
 SOCKET_NAME, TOKEN_NAME, INSTALL_NAME = "control.sock", "control.token", "install.json"
 MAX_BODY = 4096
-MAX_SOCKET_PATH = 103  # macOS limits a Unix socket's path to 104 bytes, the terminating zero included
+# A Unix socket's path is limited to 104 bytes on macOS and 108 on Linux, the terminating zero included.
+MAX_SOCKET_PATH = 103 if sys.platform == "darwin" else 107
 TIMEOUT_S = 15.0
 
 ROUTES = {  # (method, path) -> (session command, how its arguments come from the request)
@@ -163,7 +164,7 @@ class ControlServer:
 
     def start(self):
         if len(str(self.socket_path).encode()) > MAX_SOCKET_PATH:
-            raise RuntimeError(f"the control socket path is too long for macOS ({self.socket_path}); "
+            raise RuntimeError(f"the control socket path is too long for this system ({self.socket_path}); "
                                f"set DISKO_CONTROL_DIR to a shorter folder")
         self.folder.mkdir(mode=0o700, parents=True, exist_ok=True)
         os.chmod(self.folder, 0o700)

@@ -1,5 +1,6 @@
-"""Where a source's secrets live: the macOS Keychain (or a dict, in tests), and the repository's
-.env file for settings a listener types in once. Shared by every provider that signs in.
+"""Where a source's secrets live: the system's secret store (the macOS Keychain; on Linux the Secret
+Service, i.e. GNOME Keyring or KWallet, through the keyring package), or a dict in tests, and the
+repository's .env file for settings a listener types in once. Shared by every provider that signs in.
 
 Tokens go in a store, never in files, logs, URLs or messages.
 """
@@ -7,6 +8,7 @@ import base64
 import hashlib
 import secrets
 import subprocess
+import sys
 from pathlib import Path
 
 from .base import SourceError
@@ -63,15 +65,79 @@ class MemoryStore:
         self.items.pop(name, None)
 
 
-class KeychainStore:
+def KeychainStore(service: str):
+    """The system's secret store under one service name: the Keychain on macOS, the Secret Service
+    elsewhere. (The name is historical: every source asks for a "KeychainStore".)"""
+    return MacKeychainStore(service) if sys.platform == "darwin" else SecretServiceStore(service)
+
+
+def _check_service(service: str):
+    if not service.replace(".", "").replace("-", "").isalnum():
+        raise ValueError(f"bad secret service name {service!r}")
+
+
+class SecretServiceStore:
+    """Secrets in the desktop's Secret Service (GNOME Keyring, KWallet) through the keyring package.
+
+    There is deliberately no plain-file fallback: without a keyring daemon, signing in fails with a
+    message saying so, and nothing is written to disk."""
+
+    HINT = ("no secret store is available: disko keeps tokens in the desktop keyring (GNOME Keyring or "
+            "KWallet, through the Secret Service). Start one in this session (on a server: "
+            "`gnome-keyring-daemon --unlock`), or use a source that doesn't sign in")
+
+    def __init__(self, service: str):
+        _check_service(service)
+        self.service = service
+
+    @staticmethod
+    def _check(name: str):
+        if not name.replace("_", "").isalnum():
+            raise ValueError(f"bad secret name {name!r}")
+
+    def _keyring(self):
+        try:
+            import keyring
+            from keyring.backends.fail import Keyring as Fail
+        except ImportError:
+            raise SourceError(f"{self.HINT} (the keyring package isn't installed: run scripts/setup.sh --upgrade)")
+        if isinstance(keyring.get_keyring(), Fail):
+            raise SourceError(self.HINT)
+        return keyring
+
+    def get(self, name: str) -> str | None:
+        self._check(name)
+        try:
+            return self._keyring().get_password(self.service, name)
+        except SourceError:
+            return None  # nothing stored is what a missing store means for reading
+        except Exception:  # a locked or broken keyring: read as not there, like a refused Keychain
+            return None
+
+    def set(self, name: str, value: str):
+        self._check(name)
+        keyring = self._keyring()
+        try:
+            keyring.set_password(self.service, name, value)
+        except Exception as e:
+            raise SourceError(f"couldn't save {name} in the keyring ({type(e).__name__}: {e})")
+
+    def delete(self, name: str):
+        self._check(name)
+        try:
+            self._keyring().delete_password(self.service, name)
+        except Exception:
+            pass
+
+
+class MacKeychainStore:
     """Generic passwords in the login Keychain under one service name, through /usr/bin/security.
 
     Values are written through `security -i`'s stdin (hex-encoded with -X), so they never appear in
     a process's command line."""
 
     def __init__(self, service: str):
-        if not service.replace(".", "").replace("-", "").isalnum():
-            raise ValueError(f"bad Keychain service name {service!r}")
+        _check_service(service)
         self.service = service
 
     @staticmethod

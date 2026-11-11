@@ -11,3 +11,5 @@ soundfile>=0.14,<1
 soxr>=1.1,<2
 pandas>=3.0,<4
 httpx>=0.28,<1
+# Linux: tokens go in the desktop keyring (Secret Service) instead of the macOS Keychain.
+keyring>=25.7,<27; sys_platform == "linux"

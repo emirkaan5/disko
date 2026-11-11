@@ -1,8 +1,17 @@
-# .venv-audio: the deep pass (live/workers/deep.py, allin1's MLX port) and the house-set scripts
-# (scripts/house/). Installed by scripts/setup.sh:
+# .venv-audio: the deep pass (live/workers/deep.py) and the house-set scripts (scripts/house/).
+# Installed by scripts/setup.sh:
 #   uv venv .venv-audio --python 3.14 && uv pip install --python .venv-audio -r requirements/audio.txt
-all-in-one-mlx>=1.0,<2
-mlx>=0.32,<1
+# (on Linux with --torch-backend auto, so uv picks the CUDA or CPU build of torch for this machine).
+#
+# Apple Silicon: allin1's MLX port.
+all-in-one-mlx>=1.0,<2; sys_platform == "darwin" and platform_machine == "arm64"
+mlx>=0.32,<1; sys_platform == "darwin" and platform_machine == "arm64"
+# Linux: upstream allin1 on PyTorch. It also wants NATTEN 0.14's API, which no current NATTEN has:
+# live/workers/natten_torch stands in for it, so NATTEN is not installed. Its spectrogram needs
+# madmom, which has no release that builds on current Python; this is a pinned commit of its main branch.
+allin1==1.1.0; sys_platform == "linux"
+torch>=2.6,<3; sys_platform == "linux"
+madmom @ git+https://github.com/CPJKU/madmom@27f032e8947204902c675e5e341a3faf5dc86dae; sys_platform == "linux"
 demucs>=4.1,<5
 essentia>=2.1b6.dev1438,<3
 librosa>=1.0,<2

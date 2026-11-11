@@ -2,7 +2,7 @@
 # disko: one command for the app, its control client, setup and the Dock app.
 # Runs from this checkout; symlink it onto your PATH if you like:
 #   ln -s "/path/to/disko/bin/disko" ~/.local/bin/disko
-# Works on macOS's stock bash 3.2.
+# Runs on Apple Silicon Macs (stock bash 3.2) and on Linux.
 set -eu
 
 # This script's real location, through any chain of symlinks, so `disko` works from anywhere.
@@ -29,7 +29,7 @@ Usage:
                                 stop, pick-again, energy up|hold|down, tracks [query]
   disko setup [--dry-run] [--upgrade] [--kev-weights]
                                 set up or check the venvs, Kev and the Essentia models
-  disko app [--install]         build dist/disko.app (--install copies it to ~/Applications)
+  disko app [--install]         macOS: build dist/disko.app (--install copies it to ~/Applications)
   disko doctor                  check that everything disko needs is in place
   disko help                    this text
 
@@ -69,11 +69,29 @@ doctor() {
 
     echo "disko doctor ($REPO)"
 
-    if [ "$(uname -s)" = Darwin ] && [ "$(sysctl -n hw.optional.arm64 2>/dev/null || echo 0)" = 1 ]; then
-        line "$OK" "Apple Silicon Mac (macOS $(sw_vers -productVersion 2>/dev/null || echo '?'))"
+    os=$(uname -s)
+    if [ "$os" = Darwin ] && [ "$(sysctl -n hw.optional.arm64 2>/dev/null || echo 0)" = 1 ]; then
+        line "$OK" "Apple Silicon Mac (macOS $(sw_vers -productVersion 2>/dev/null || echo '?')); deep pass and Kev on MLX"
+        deep_mods="allin1_mlx mlx essentia soundfile numpy"
+    elif [ "$os" = Linux ] && { [ "$(uname -m)" = x86_64 ] || [ "$(uname -m)" = aarch64 ]; }; then
+        gpu="no NVIDIA GPU found: on the CPU, slower"
+        command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1 \
+            && gpu="NVIDIA GPU: $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -n 1)"
+        line "$OK" "Linux $(uname -m); deep pass and Kev on PyTorch ($gpu)"
+        deep_mods="allin1 torch madmom essentia soundfile numpy"
+        if (ldconfig -p 2>/dev/null || true) | grep -q libportaudio.so; then
+            line "$OK" "PortAudio (sound output)"
+        else
+            line "$NO" "PortAudio: libportaudio not found, so nothing can play (Debian/Ubuntu: sudo apt-get install libportaudio2)"
+            blocking=1
+        fi
+        if [ -z "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
+            line "-" "display: none in this session; the window needs one (disko headless FOLDER works without)"
+        fi
     else
-        line "$NO" "Apple Silicon Mac: this is $(uname -s) $(uname -m); allin1 and Kev need MLX on Apple Silicon"
+        line "$NO" "machine: this is $os $(uname -m); disko runs on Apple Silicon Macs and on Linux (x86_64, aarch64)"
         blocking=1; fix_mac=1
+        deep_mods="allin1_mlx mlx essentia soundfile numpy"
     fi
 
     uv=$(command -v uv 2>/dev/null || true)
@@ -89,7 +107,7 @@ doctor() {
     for spec in \
         "live|.venv-live|the app|PySide6 sounddevice pedalboard numba numpy scipy soundfile soxr pandas httpx" \
         "fast|.venv-essentia-tf|fast pass|essentia numpy" \
-        "audio|.venv-audio|deep pass|allin1_mlx mlx essentia soundfile numpy"; do
+        "audio|.venv-audio|deep pass|$deep_mods"; do
         IFS='|' read -r name venv purpose mods <<EOF
 $spec
 EOF
@@ -155,10 +173,12 @@ print(" ".join(m for m in sys.argv[1:] if importlib.util.find_spec(m) is None))'
 
     ffmpeg=$(command -v ffmpeg 2>/dev/null || true)
     [ -n "$ffmpeg" ] || { [ -x /opt/homebrew/bin/ffmpeg ] && ffmpeg=/opt/homebrew/bin/ffmpeg; } || true
+    install_ffmpeg="brew install ffmpeg"
+    [ "$os" = Darwin ] || install_ffmpeg="your package manager, e.g. sudo apt-get install ffmpeg"
     if [ -n "$ffmpeg" ]; then
         line "$OK" "ffmpeg: $ffmpeg (for AAC/M4A files, Beatport streams and a fetched Spotify track)"
     else
-        line "$UNK" "ffmpeg: not found; optional, needed only by AAC/M4A files, Beatport streams and a fetched Spotify track (brew install ffmpeg)"
+        line "$UNK" "ffmpeg: not found; optional, needed only by AAC/M4A files, Beatport streams and a fetched Spotify track ($install_ffmpeg)"
     fi
 
     control="${DISKO_CONTROL_DIR:-$HOME/.disko}/control.sock"
@@ -168,7 +188,7 @@ print(" ".join(m for m in sys.argv[1:] if importlib.util.find_spec(m) is None))'
         line "-" "control socket: $control (created while disko runs)"
     fi
 
-    for app in "$HOME/Applications/disko.app" "$REPO/dist/disko.app"; do
+    [ "$os" = Darwin ] && for app in "$HOME/Applications/disko.app" "$REPO/dist/disko.app"; do
         [ -d "$app" ] || continue
         baked=$(cat "$app/Contents/Resources/checkout" 2>/dev/null || true)
         if [ "$baked" = "$REPO" ]; then
@@ -177,7 +197,7 @@ print(" ".join(m for m in sys.argv[1:] if importlib.util.find_spec(m) is None))'
             line "$NO" "app: $app points at ${baked:-an unknown checkout}; rebuild it with \`bin/disko app --install\`"
         fi
     done
-    if [ ! -d "$HOME/Applications/disko.app" ]; then
+    if [ "$os" = Darwin ] && [ ! -d "$HOME/Applications/disko.app" ]; then
         line "-" "app: not in ~/Applications (bin/disko app --install puts it there)"
     fi
 
@@ -188,7 +208,7 @@ print(" ".join(m for m in sys.argv[1:] if importlib.util.find_spec(m) is None))'
         echo "disko can't run yet."
     fi
     if [ "$fix_mac" = 1 ]; then
-        echo "disko needs an Apple Silicon Mac; nothing else will fix that."
+        echo "disko runs on Apple Silicon Macs and on Linux (x86_64, aarch64); nothing else will fix that."
     elif [ "$fix_uv" = 1 ]; then
         echo "Fix: install uv (curl -LsSf https://astral.sh/uv/install.sh | sh), then run bin/disko setup"
     elif [ "$fix_setup" = 1 ] && [ "$fix_weights" = 1 ]; then
@@ -267,6 +287,10 @@ case $cmd in
         ;;
     app)
         shift
+        if [ "$(uname -s)" != Darwin ]; then
+            echo "disko app builds a macOS .app; on Linux, run bin/disko (or link it onto your PATH)." >&2
+            exit 1
+        fi
         exec /bin/bash "$REPO/scripts/make_app.sh" "$@"
         ;;
     ctl)

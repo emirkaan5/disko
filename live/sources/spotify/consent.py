@@ -26,7 +26,7 @@ VERSION = 1
 WARNING = """Turning on Spotify audio means:
 
 - disko reads your tracks through librespot, an unofficial open-source Spotify client, and
-  decodes them on this Mac. It needs a Spotify Premium account.
+  decodes them on this computer. It needs a Spotify Premium account.
 - It is against Spotify's terms of service, whatever plan the account holds: Spotify does not
   permit a third-party app to read its audio, and disko has no agreement with it.
 - The account could be suspended. disko fetches one track at a time, only when it is about to

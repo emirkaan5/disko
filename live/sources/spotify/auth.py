@@ -58,9 +58,9 @@ class NotConfigured(SourceError):
     """Something disko needs before it can sign in is missing; the message says what to do."""
 
 
-class KeychainStore(_KeychainStore):
-    def __init__(self, service: str = KEYCHAIN_SERVICE):
-        super().__init__(service)
+def KeychainStore(service: str = KEYCHAIN_SERVICE):
+    """This source's secrets in the system's secret store (live/sources/secrets.py)."""
+    return _KeychainStore(service)
 
 
 def client_id(store, env: dict | None = None) -> str:
@@ -167,7 +167,7 @@ class OAuth:
         come back with the code."""
         redirect = urllib.parse.urlparse(self.redirect_uri)
         if not (redirect.scheme == "http" and redirect.hostname in ("127.0.0.1", "::1") and redirect.port):
-            raise NotConfigured(f"the redirect URI must be http://127.0.0.1:PORT/path on this Mac "
+            raise NotConfigured(f"the redirect URI must be http://127.0.0.1:PORT/path on this computer "
                                 f"(Spotify doesn't accept 'localhost'), not {self.redirect_uri}")
         state = secrets.token_urlsafe(24)
         verifier, challenge = pkce()

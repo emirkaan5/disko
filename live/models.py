@@ -2,8 +2,8 @@
 
 Three kinds, all speaking the same /v1/systemone protocol (live/kev.py has the wire format):
 
-    kev     Kev-4B on this Mac (external/kev, MLX). Free and private, a few GB to download once, and
-            the app starts and stops its server itself. The default.
+    kev     Kev-4B on this machine (external/kev; MLX on a Mac, PyTorch on Linux). Free and private, a
+            few GB to download once, and the app starts and stops its server itself. The default.
     jev     Jev, hosted by TypeSafe (api.typesafe.ai). Needs an API key and is billed per input token;
             nothing to install, and what the DJ is deciding about is sent to TypeSafe.
     custom  any server that answers /v1/systemone: Laya, a Kev on another machine, your own fine-tune.
@@ -30,6 +30,7 @@ from pathlib import Path
 
 import httpx
 
+from .host import MAC
 from .kev import KEV_DIR, LOG as KEV_LOG, RUN as KEV_RUN, URL as KEV_URL, Kev
 from .sources.secrets import KeychainStore
 from .steps import Cancelled, Say, SetupFailed, run, stop
@@ -280,7 +281,7 @@ def _has_git() -> bool:
     git = shutil.which("git")
     if not git:
         return False
-    if git == "/usr/bin/git":
+    if MAC and git == "/usr/bin/git":  # on Linux /usr/bin/git is just git
         return subprocess.run(["/usr/bin/xcode-select", "-p"], capture_output=True).returncode == 0
     return True
 

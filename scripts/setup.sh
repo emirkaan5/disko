@@ -10,7 +10,7 @@
 #                                    audio through librespot: against Spotify's terms, so it is only
 #                                    built when asked for (see requirements/spotify.txt)
 #
-# Works on macOS's stock bash 3.2.
+# Runs on Apple Silicon Macs (stock bash 3.2) and on Linux (x86_64, aarch64).
 set -eu
 
 REPO=$(cd -P "$(dirname "$0")/.." && pwd)
@@ -66,12 +66,40 @@ run() {
 # --- the machine ------------------------------------------------------------------------------
 
 step "Checking the machine"
-if [ "$(uname -s)" != Darwin ] || [ "$(sysctl -n hw.optional.arm64 2>/dev/null || echo 0)" != 1 ]; then
-    say "Sorry: disko needs an Apple Silicon Mac. allin1 (the deep pass) and Kev both run on MLX,"
-    say "which only exists there. This machine is $(uname -s) $(uname -m)."
+OS=$(uname -s)
+if [ "$OS" = Darwin ] && [ "$(sysctl -n hw.optional.arm64 2>/dev/null || echo 0)" = 1 ]; then
+    say "Apple Silicon, macOS $(sw_vers -productVersion)"
+    PKG="brew install"
+elif [ "$OS" = Linux ] && { [ "$(uname -m)" = x86_64 ] || [ "$(uname -m)" = aarch64 ]; }; then
+    distro=$( (. /etc/os-release 2>/dev/null && echo "$PRETTY_NAME") || echo Linux)
+    say "Linux ($distro, $(uname -m)); the deep pass and Kev run on PyTorch here, on an NVIDIA GPU if"
+    say "there is one, otherwise on the CPU (slower: a track's deep pass takes about as long as the track)"
+    if command -v apt-get >/dev/null 2>&1; then PKG="sudo apt-get install -y"
+    elif command -v dnf >/dev/null 2>&1; then PKG="sudo dnf install -y"
+    elif command -v pacman >/dev/null 2>&1; then PKG="sudo pacman -S"
+    else PKG="your package manager: install"; fi
+    # What the venvs can't bring themselves.
+    missing=""
+    { (ldconfig -p 2>/dev/null || true) | grep -q libportaudio.so; } || missing="$missing portaudio"
+    command -v cc >/dev/null 2>&1 || missing="$missing compiler"
+    command -v git >/dev/null 2>&1 || missing="$missing git"
+    if [ -n "$missing" ]; then
+        say "Missing:$missing (PortAudio plays the sound; a C compiler builds madmom, the deep pass's"
+        say "spectrogram; git fetches Kev and madmom). Install them, then run this again:"
+        case "$PKG" in
+            *apt-get*) pkgs="libportaudio2 build-essential git" ;;
+            *dnf*) pkgs="portaudio gcc gcc-c++ make git" ;;
+            *pacman*) pkgs="portaudio base-devel git" ;;
+            *) pkgs="PortAudio, a C compiler, git" ;;
+        esac
+        say "    $PKG $pkgs"
+        [ "$DRY" = 1 ] || exit 1
+    fi
+else
+    say "Sorry: disko runs on Apple Silicon Macs and on Linux (x86_64 or aarch64)."
+    say "This machine is $OS $(uname -m)."
     exit 1
 fi
-say "Apple Silicon, macOS $(sw_vers -productVersion)"
 
 UV=$(command -v uv 2>/dev/null || true)
 if [ -z "$UV" ] && [ -x "$HOME/.local/bin/uv" ]; then UV="$HOME/.local/bin/uv"; fi
@@ -79,7 +107,7 @@ if [ -z "$UV" ]; then
     say "disko needs uv (https://docs.astral.sh/uv/) to build its Python environments and to run Kev."
     say "Install it, then run this again:"
     say "    curl -LsSf https://astral.sh/uv/install.sh | sh"
-    say "(or: brew install uv)"
+    [ "$OS" = Darwin ] && say "(or: brew install uv)"
     exit 1
 fi
 say "uv: $UV ($("$UV" --version | awk '{print $2}'))"
@@ -96,7 +124,7 @@ if [ "$SPOTIFY" = 1 ]; then
     VENVS+=("spotify:.venv-spotify:the Spotify fetch helper")
     if ! command -v ffmpeg >/dev/null 2>&1; then
         say "Note: the fetch helper decodes a fetched track with ffmpeg, which isn't on PATH."
-        say "      Install it with \`brew install ffmpeg\`, or a fetch will fail when a track is picked."
+        say "      Install it with \`$PKG ffmpeg\`, or a fetch will fail when a track is picked."
     fi
 fi
 for spec in "${VENVS[@]}"; do
@@ -105,10 +133,13 @@ for spec in "${VENVS[@]}"; do
     venv=${rest%%:*}
     purpose=${rest#*:}
     req="requirements/$name.txt"
+    # On Linux, let uv pick torch's CUDA or CPU build for this machine (the deep pass's venv).
+    extra=()
+    if [ "$OS" = Linux ] && [ "$name" = audio ]; then extra=(--torch-backend auto); fi
     step "$venv ($purpose, $req)"
     if [ -x "$venv/bin/python" ]; then
         if [ "$UPGRADE" = 1 ]; then
-            run "$UV" pip install --python "$venv" -r "$req"
+            run "$UV" pip install --python "$venv" -r "$req" ${extra[@]+"${extra[@]}"}
         else
             say "present, left as is (--upgrade re-installs $req into it)"
         fi
@@ -119,7 +150,7 @@ for spec in "${VENVS[@]}"; do
             exit 1
         fi
         run "$UV" venv "$venv" --python "$PYTHON_VERSION"
-        run "$UV" pip install --python "$venv" -r "$req"
+        run "$UV" pip install --python "$venv" -r "$req" ${extra[@]+"${extra[@]}"}
     fi
 done
 
@@ -194,7 +225,11 @@ if [ "$WEIGHTS" = 1 ]; then
             pid=$!
             stop_kev() {
                 kill "$pid" 2>/dev/null || true
-                for p in $(lsof -ti tcp:8009 -sTCP:LISTEN 2>/dev/null); do kill "$p" 2>/dev/null || true; done
+                if command -v lsof >/dev/null 2>&1; then
+                    for p in $(lsof -ti tcp:8009 -sTCP:LISTEN 2>/dev/null); do kill "$p" 2>/dev/null || true; done
+                else  # no lsof (a minimal Linux): the server is uv's child, started from external/kev
+                    pkill -f "kev.serve --run $KEV_RUN --port 8009" 2>/dev/null || true
+                fi
             }
             trap 'stop_kev; exit 130' INT TERM
             up=0
@@ -231,7 +266,7 @@ cat <<EOF
 
 Start disko:            bin/disko
 Put disko on your PATH: ln -s "$REPO/bin/disko" ~/.local/bin/disko
-Build the Dock app:     bin/disko app --install
 EOF
+if [ "$OS" = Darwin ]; then echo "Build the Dock app:     bin/disko app --install"; fi
 [ "$DRY" = 1 ] && exit 0
 exit "$status"

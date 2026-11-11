@@ -9,12 +9,15 @@ from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout
 
 from .. import models
+from ..host import MAC, THIS_MACHINE
 from . import theme as T
 from .widgets import label
 
-KEV_TEXT = ("Kev-4B, running on this Mac. Free and private: nothing about your music leaves the computer. "
-            "Needs an Apple Silicon Mac and a one-time download of a few GB; the app starts and stops it.")
-JEV_TEXT = ("Jev, hosted by TypeSafe. Nothing to install, and quick on any Mac, but it needs an API key, is "
+KEV_TEXT = (f"Kev-4B, running on {THIS_MACHINE}. Free and private: nothing about your music leaves the computer. "
+            + ("Needs an Apple Silicon Mac and a one-time download of a few GB; the app starts and stops it."
+               if MAC else "Runs on PyTorch: quick on an NVIDIA GPU, slower on the CPU. A one-time download of a "
+               "few GB; the app starts and stops it."))
+JEV_TEXT = ("Jev, hosted by TypeSafe. Nothing to install, and quick on any computer, but it needs an API key, is "
             "billed per request, and the track descriptions the DJ weighs are sent to TypeSafe.")
 CUSTOM_TEXT = ("Any server that answers the System One protocol (/v1/systemone): Laya, a Kev on another "
                "machine, or a model you fine-tuned. The key is optional.")
@@ -116,7 +119,7 @@ class ModelPage(QFrame):
         lay.addSpacing(14)
 
         # Kev
-        self.kev = Option("kev", "Kev · on this Mac", KEV_TEXT)
+        self.kev = Option("kev", f"Kev · on {THIS_MACHINE}", KEV_TEXT)
         self.kev.add_status()
         row = QHBoxLayout()
         self.kev_install = _button("Install Kev", primary=True)

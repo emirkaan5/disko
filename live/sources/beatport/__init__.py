@@ -41,7 +41,7 @@ def default_policy() -> Policy:
     if streaming_enabled():
         return Policy(PROVIDER, STREAMING_OPERATIONS,
                       agreement={"reference": "listener's Beatport Streaming plan (DISKO_BEATPORT_STREAMING=1)"},
-                      notes="streaming playback: read, decode and analyze the account's stream on this Mac")
+                      notes="streaming playback: read, decode and analyze the account's stream on this computer")
     return Policy(PROVIDER, DEFAULT_OPERATIONS,
                   agreement={"reference": "built in: Beatport's API with the listener's own client ID"},
                   notes="browsing and catalog metadata; no audio (set DISKO_BEATPORT_STREAMING=1 for playback)")

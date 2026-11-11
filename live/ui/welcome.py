@@ -14,6 +14,7 @@ from PySide6.QtGui import QColor, QFont, QFontMetrics, QLinearGradient, QPainter
 from PySide6.QtWidgets import (QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QPushButton,
                                QScrollArea, QSizePolicy, QStackedWidget, QVBoxLayout, QWidget)
 
+from ..host import THIS_MACHINE
 from ..indexer import FastIndexer
 from ..playlist import Playlist, camelot, guess_names
 from ..sources.spotify.consent import WARNING as SPOTIFY_WARNING
@@ -742,8 +743,8 @@ class WelcomeWindow(QMainWindow):
         choice = store.read()
         if choice.kind == "kev":
             state = models.kev_state()
-            text, warn = (("Kev, on this Mac.", False) if state.ready
-                          else (f"Kev, on this Mac, isn't installed yet: {state.summary}.", True))
+            text, warn = ((f"Kev, on {THIS_MACHINE}.", False) if state.ready
+                          else (f"Kev, on {THIS_MACHINE}, isn't installed yet: {state.summary}.", True))
         elif choice.kind == "jev":
             text, warn = (("Jev, through TypeSafe's API.", False) if store.key("jev")
                           else ("Jev is chosen but has no API key yet.", True))

@@ -116,9 +116,9 @@ class NotConfigured(SourceError):
 # ---------------------------------------------------------------- secret storage
 
 
-class KeychainStore(_KeychainStore):
-    def __init__(self, service: str = KEYCHAIN_SERVICE):
-        super().__init__(service)
+def KeychainStore(service: str = KEYCHAIN_SERVICE):
+    """This source's secrets in the system's secret store (live/sources/secrets.py)."""
+    return _KeychainStore(service)
 
 
 # ---------------------------------------------------------------- credentials and tokens
@@ -311,7 +311,7 @@ class OAuth:
             return self._login_manual(open_browser, prompt)
         redirect = self._loopback_redirect()
         if redirect is None:
-            raise NotConfigured(f"the redirect URI must be http://127.0.0.1:PORT/path on this Mac, not {self.redirect_uri}")
+            raise NotConfigured(f"the redirect URI must be http://127.0.0.1:PORT/path on this computer, not {self.redirect_uri}")
         state = secrets.token_urlsafe(24)
         verifier, challenge = pkce()
         result = {}
