@@ -22,6 +22,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from . import mixes
 from .audio import DECK_OPERATIONS, SR, Deck
 from .dj import KevDJ
+from .host import LOCAL_LABEL, MACHINE_RUNNING
 from .library import Library, Track
 from .mixes import Scheduled
 from .sources import AuthExpired, Operation, PolicyDenied, policy_for, require
@@ -429,7 +430,7 @@ class Session:
                "library": {"name": self.library.name, "tracks": len(self.library.tracks),
                            "unplayable": len(self.library.unrankable)},
                "sources": self.sources(),
-               "playback": {"where": "the sound output of the Mac running disko", "device": self.engine.output_name},
+               "playback": {"where": f"the sound output of {MACHINE_RUNNING} disko", "device": self.engine.output_name},
                "now": None, "next": None,
                "notice": None if self.notice is None else {"text": self.notice[0], "tone": self.notice[1]}}
         if self.current is not None:
@@ -449,7 +450,7 @@ class Session:
         for t in self.library.tracks:
             if t.provider not in out:
                 policy = policy_for(t)
-                label = getattr(t.source, "label", "") or ("This Mac" if t.provider == "local" else t.provider)
+                label = getattr(t.source, "label", "") or (LOCAL_LABEL if t.provider == "local" else t.provider)
                 out[t.provider] = {"provider": t.provider, "label": label,
                                    "permitted": [op.name.lower() for op in Operation if policy.allows(op)]}
         return list(out.values())
@@ -479,7 +480,7 @@ class Session:
         except PolicyDenied as e:
             raise SessionError(str(e)) from None
         return {"starting": track_info(track), "sources": self.sources(),
-                "playback": {"where": "the sound output of the Mac running disko", "device": self.engine.output_name}}
+                "playback": {"where": f"the sound output of {MACHINE_RUNNING} disko", "device": self.engine.output_name}}
 
     def cmd_pause(self) -> dict:
         if self.current is None:

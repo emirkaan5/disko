@@ -28,13 +28,15 @@ Effects sit on top of a technique, at most two per mix: **Riser**, **Loop Roll**
 
 ## Running it
 
-On an Apple Silicon Mac with [uv](https://docs.astral.sh/uv/) installed:
+On an Apple Silicon Mac or x86_64 Linux, with [uv](https://docs.astral.sh/uv/) installed:
 
 ```bash
 ./scripts/setup.sh --kev-weights   # once: the venvs, Kev and its weights, the Essentia models
 bin/disko                          # open the app
-bin/disko app --install            # optional: disko.app in ~/Applications, for the Dock
+bin/disko app --install            # macOS, optional: disko.app in ~/Applications, for the Dock
 ```
+
+On Linux, install PortAudio, a C compiler and git first (Debian/Ubuntu: `sudo apt-get install libportaudio2 build-essential git`); setup checks for them and names the packages for your distribution.
 
 `bin/disko doctor` checks that every piece is in place and prints the command that fixes what isn't. `bin/disko help` lists the rest: `bin/disko headless FOLDER` plays a folder with no window, and `bin/disko ctl status` (or `start`, `pause`, `energy up`, ...) steers a running set. To type just `disko`, link it onto your PATH: `ln -s "$PWD/bin/disko" ~/.local/bin/disko`.
 
@@ -70,7 +72,7 @@ bin/disko ctl energy up
 bin/disko ctl status
 ```
 
-The control socket lives in `~/.disko`, readable only by you, and disko only answers a process running as the same macOS user. Nothing listens on the network unless you pass `--control-tcp HOST:PORT`, which needs the token disko then writes to `~/.disko/control.token`. Each start also records where disko is installed in `~/.disko/install.json`, so the Hermes plugin ([hermes-disko](https://github.com/emirkaan5/hermes-disko)) can open disko for you; the copy in `integrations/hermes/disko` is the older draft it replaced. `python -m live --fake 12` runs everything on a synthetic catalog with no real music.
+The control socket lives in `~/.disko`, readable only by you, and disko only answers a process running as the same user. Nothing listens on the network unless you pass `--control-tcp HOST:PORT`, which needs the token disko then writes to `~/.disko/control.token`. Each start also records where disko is installed in `~/.disko/install.json`, so the Hermes plugin ([hermes-disko](https://github.com/emirkaan5/hermes-disko)) can open disko for you; the copy in `integrations/hermes/disko` is the older draft it replaced. `python -m live --fake 12` runs everything on a synthetic catalog with no real music.
 
 ### Beatport
 
@@ -105,7 +107,7 @@ Then:
 .venv-live/bin/python -m live.sources.beatport logout
 ```
 
-disko uses Beatport for browsing, track details and passing those details to Kev on your Mac. To restrict that, add `live/sources/capabilities/beatport.json` (the format is in `live/sources/policy.py`); if the file exists, it replaces the default. `DISKO_BEATPORT_STREAMING=1` widens the default to allow decoding, analyzing and mixing the stream.
+disko uses Beatport for browsing, track details and passing those details to Kev on your computer. To restrict that, add `live/sources/capabilities/beatport.json` (the format is in `live/sources/policy.py`); if the file exists, it replaces the default. `DISKO_BEATPORT_STREAMING=1` widens the default to allow decoding, analyzing and mixing the stream.
 
 To play a set from a Beatport list (needs the streaming plan), pass it to `live`:
 
@@ -142,7 +144,7 @@ Nothing here has been run against a real Spotify account yet. The first run, ste
 
 ## Setup
 
-disko runs on Apple Silicon Macs: allin1 and Kev both use MLX. It needs [uv](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/install.sh | sh`); ffmpeg (`brew install ffmpeg`) is optional and only used for AAC/M4A files, Beatport streams and a fetched Spotify track. Then:
+disko runs on Apple Silicon Macs and on x86_64 Linux. It needs [uv](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/install.sh | sh`); ffmpeg (`brew install ffmpeg`, or your distribution's package) is optional and only used for AAC/M4A files, Beatport streams and a fetched Spotify track. Then:
 
 ```bash
 ./scripts/setup.sh                 # or: bin/disko setup
@@ -167,10 +169,17 @@ uv venv .venv-live --python 3.14 && uv pip install --python .venv-live -r requir
 |---|---|---|---|
 | `.venv-live` | The app | `requirements/live.txt` | pyside6, sounddevice, pedalboard, numba, scipy, soundfile, soxr, pandas, httpx |
 | `.venv-essentia-tf` | Fast pass | `requirements/fast.txt` | essentia-tensorflow |
-| `.venv-audio` | Deep pass, house-set scripts | `requirements/audio.txt` | all-in-one-mlx, demucs, essentia, librosa |
+| `.venv-audio` | Deep pass, house-set scripts | `requirements/audio.txt` | all-in-one-mlx (macOS) or allin1 and torch (Linux), demucs, essentia, librosa |
 | `.venv` | Benchmarks (not set up by setup.sh) | | laya, httpx, torch |
 
 `DISKO_FAST_PYTHON` and `DISKO_DEEP_PYTHON` point the app at other interpreters for the two passes.
+
+**On Linux.** The same three venvs, with two differences:
+
+- The deep pass runs upstream [allin1](https://github.com/mir-aidj/all-in-one) on PyTorch instead of its MLX port, and Kev runs on PyTorch too. Both use an NVIDIA GPU when there is one (setup installs the matching torch build with `uv pip install --torch-backend auto`) and the CPU otherwise, where a track's deep pass takes a few minutes. allin1 expects NATTEN 0.14's API, which current NATTEN releases no longer have; `live/workers/natten_torch` is a small PyTorch stand-in for the four functions it calls, so NATTEN isn't installed. `tests/test_natten_torch.py` checks it against natten-mlx, and on a real track it gives the same beats, downbeats and sections as the MLX port. `DISKO_DEEP_BACKEND=torch` forces this path on a Mac too.
+- Sign-in tokens (Beatport, Spotify, a Jev API key) go to the desktop keyring (GNOME Keyring or KWallet, through the Secret Service) instead of the macOS Keychain. With no keyring running, signing in fails with a message; disko never writes tokens to a file.
+
+Linux needs PortAudio for sound, a C compiler (the deep pass builds [madmom](https://github.com/CPJKU/madmom) from a pinned commit) and git. arm64 Linux isn't supported, because essentia-tensorflow (the fast pass) has no build for it. There's no Dock app; link `bin/disko` onto your PATH instead.
 
 **Kev.** Setup clones [jaredpalmer/kev](https://github.com/jaredpalmer/kev) into `external/kev` and builds its environment with `uv sync --extra serve`. When no server is running, the app starts Kev-4B on port 8009 and stops it again on exit. It starts it offline, though, so the weights must already be in the Hugging Face cache. `--kev-weights` fetches them by running the server once until it answers; by hand, run this and press Ctrl-C once it is serving:
 

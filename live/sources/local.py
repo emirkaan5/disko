@@ -6,6 +6,7 @@ allowed, analysis on disk included.
 """
 from pathlib import Path
 
+from ..host import LOCAL_LABEL
 from .base import Availability, AudioHandle, Page, PlaylistRef, Source, SourceError, TrackId, TrackInfo
 from .policy import Policy
 
@@ -24,7 +25,7 @@ class FileAudio(AudioHandle):
 
 class LocalSource(Source):
     provider = "local"
-    label = "This Mac"
+    label = LOCAL_LABEL
 
     def __init__(self, playlist):
         super().__init__(Policy.local())

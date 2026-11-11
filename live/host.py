@@ -5,3 +5,5 @@ import sys
 
 MAC = sys.platform == "darwin"
 THIS_MACHINE = "this Mac" if MAC else "this computer"
+MACHINE_RUNNING = "the Mac running" if MAC else "the computer running"  # "the sound output of ... disko"
+LOCAL_LABEL = "This Mac" if MAC else "This computer"  # the local source, as listed in the status
