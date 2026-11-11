@@ -13,12 +13,14 @@ import sys
 import tempfile
 import unittest
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from pathlib import Path
 from unittest import mock
 
-from live.sources import AuthExpired, Availability, Operation, Policy, PolicyDenied, SourceTimeout, TrackId
+from live.sources import (AuthExpired, Availability, Operation, Policy, PolicyDenied, SourceTimeout, TrackId,
+                          TrackUnavailable)
 from live.sources import beatport
 from live.sources.beatport import __main__ as cli
 from live.sources.beatport import auth, source as bp_source
@@ -45,6 +47,22 @@ def follow(url: str):
     except urllib.error.HTTPError as e:
         e.close()
         raise
+
+
+def grab_code(url: str) -> str:
+    """Plays the browser for a manual sign-in: opens the authorize link but does not follow the
+    redirect, and reads the code out of it, the way the listener copies it out of the address bar."""
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *args, **kwargs):
+            return None
+
+    try:
+        urllib.request.build_opener(NoRedirect).open(url, timeout=10)
+    except urllib.error.HTTPError as e:
+        location = e.headers.get("Location", "")
+        e.close()
+        return auth.parse_code(location) or ""
+    raise AssertionError("the authorize link didn't redirect")
 
 
 _no_env = mock.patch.object(auth, "env_values", lambda: {})  # the developer's own .env stays out of these tests
@@ -95,6 +113,26 @@ class Gate(unittest.TestCase):
                 auth.Credentials.load(store)
         # and the docs page's real one is on the list
         self.assertEqual(len(auth.BORROWED_CLIENT_IDS), 1)
+
+    def test_borrowed_client_ids_allowed_only_with_the_flag(self):
+        fake_hash = hashlib.sha256(b"someone-elses-app").hexdigest()
+        with mock.patch.object(auth, "BORROWED_CLIENT_IDS", frozenset({fake_hash})):
+            allow = {auth.ENV_ALLOW_BORROWED: "1"}
+            creds = auth.Credentials.load(auth.MemoryStore(),
+                                          env={"DISKO_BEATPORT_CLIENT_ID": "someone-elses-app", **allow})
+            self.assertEqual(creds.client_id, "someone-elses-app")
+            store = auth.MemoryStore()
+            auth.Credentials("someone-elses-app").save(store, allow_borrowed=True)
+            self.assertEqual(store.get("client_id"), "someone-elses-app")
+
+    def test_parse_code_accepts_a_url_or_a_bare_code(self):
+        good = {"abc123": "abc123", "  abc123 ": "abc123",
+                "https://api.beatport.com/v4/auth/o/post-message/?code=abc123&state=x": "abc123",
+                "?code=abc123&state=x": "abc123", "code=abc123&state=x": "abc123"}
+        for text, expected in good.items():
+            self.assertEqual(auth.parse_code(text), expected)
+        for empty in ("", "   ", "https://api.beatport.com/v4/auth/o/post-message/?state=x"):
+            self.assertIsNone(auth.parse_code(empty))
 
     def test_secrets_stay_out_of_reprs(self):
         c = auth.Credentials("client-id-value", "very-secret")
@@ -223,10 +261,36 @@ class SignIn(WithFake):
 
         self.assertTrue(oauth.login(open_browser=forged_then_real, timeout=10).access_token)
 
-    def test_redirect_must_be_loopback(self):
-        oauth = auth.OAuth(auth.Credentials("x"), self.fake.url, "https://example.com/callback")
-        with self.assertRaises(auth.NotConfigured):
-            oauth.login(open_browser=lambda url: None, timeout=1)
+    def test_manual_sign_in_reads_the_code_back(self):
+        # The docs client's own redirect: no local port to listen on, so the code is pasted back.
+        redirect = beatport.docs_redirect_uri(self.fake.url)
+        self.fake.redirect_uris.add(redirect)
+        seen = {}
+
+        def browser(url):
+            seen["url"], seen["code"] = url, grab_code(url)
+
+        tokens = auth.OAuth(auth.Credentials.load(self.store), self.fake.url, redirect).login(
+            open_browser=browser, prompt=lambda _: seen["code"], timeout=5)
+        self.assertTrue(tokens.access_token)
+        self.assertIn("/auth/o/post-message/", redirect)
+        self.assertNotIn("code_challenge", seen["url"])       # the manual flow omits PKCE
+        self.assertIn(urllib.parse.quote(redirect, safe=""), seen["url"])  # and sends the docs redirect
+
+    def test_login_auto_selects_the_docs_redirect_for_a_borrowed_client(self):
+        fake_hash = hashlib.sha256(self.fake.client_id.encode()).hexdigest()
+        docs = beatport.docs_redirect_uri(self.fake.url)
+        self.fake.redirect_uris.add(docs)
+        store = auth.MemoryStore({"client_id": self.fake.client_id})
+        if self.secret:
+            store.set("client_secret", self.secret)
+        seen = {}
+        with mock.patch.object(auth, "BORROWED_CLIENT_IDS", frozenset({fake_hash})), \
+                mock.patch.object(auth, "env_values", lambda: {auth.ENV_ALLOW_BORROWED: "1"}):
+            tokens = beatport.login(AUTHORIZED, store, api=self.fake.url,
+                                    open_browser=lambda url: seen.update(code=grab_code(url)),
+                                    prompt=lambda _: seen["code"])
+        self.assertTrue(tokens.fresh())
 
     def test_refresh_when_expired_and_signed_out_when_revoked(self):
         self.sign_in()
@@ -322,18 +386,31 @@ class Catalog(WithFake):
         with self.assertRaises(SourceTimeout):
             self.src.playlists()
 
-    def test_no_audio(self):
+    def test_default_policy_denies_audio_before_any_request(self):
         before = len(self.fake.requests)
         with self.assertRaises(PolicyDenied):
             self.src.open_audio(TrackId("beatport", "1000"))
-        self.assertEqual(len(self.fake.requests), before)
-        allowed = Policy.from_matrix({"provider": "beatport", "agreement": {"reference": "t"},
-                                      "allow": ["BROWSE", "METADATA", "DECODE"]})
-        src = beatport.BeatportSource(self.src.client, allowed)
-        with self.assertRaises(beatport.source.SourceError) as err:
+        self.assertEqual(len(self.fake.requests), before)  # refused before the network
+
+    def _streaming_source(self):
+        streaming = Policy.from_matrix({"provider": "beatport", "agreement": {"reference": "test"},
+                                        "allow": ["BROWSE", "METADATA", "DECODE", "ANALYZE", "MIX"]})
+        return beatport.BeatportSource(self.src.client, streaming)
+
+    def test_streaming_audio_decodes(self):
+        src = self._streaming_source()
+        with src.open_audio(TrackId("beatport", "1000")) as handle:
+            samples, sr = handle.read()
+        self.assertEqual(sr, 44100)
+        self.assertEqual(samples.shape[1], 2)          # stereo float32, ready for a deck
+        self.assertGreater(len(samples), 1000)
+
+    def test_streaming_without_a_plan_is_reported(self):
+        self.fake.streaming = False  # the account holds no Beatport Streaming plan
+        src = self._streaming_source()
+        with self.assertRaises(TrackUnavailable) as err:
             src.open_audio(TrackId("beatport", "1000"))
-        self.assertIn("isn't built", str(err.exception))
-        self.assertEqual(len(self.fake.requests), before)
+        self.assertIn("Streaming plan", str(err.exception))
 
     def test_disconnect(self):
         self.src.close()

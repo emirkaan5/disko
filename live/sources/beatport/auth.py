@@ -1,5 +1,5 @@
-"""Signing in to Beatport with disko's own client ID: OAuth2 authorization code + PKCE, a loopback
-redirect, and every secret kept in the macOS Keychain.
+"""Signing in to Beatport: OAuth2 authorization code + PKCE, a loopback redirect, and every secret
+kept in the macOS Keychain.
 
 Following the documented v4 flow (https://api.beatport.com/v4/docs/, "OAuth2 Authentication"):
 
@@ -11,8 +11,17 @@ Following the documented v4 flow (https://api.beatport.com/v4/docs/, "OAuth2 Aut
 The client ID and secret come from the environment or a `.env` file at the repository root
 (DISKO_BEATPORT_CLIENT_ID, DISKO_BEATPORT_CLIENT_SECRET; see .env.example), else from the Keychain
 (`python -m live.sources.beatport set-client`). The client ID must be the one Beatport issued for disko, registered with the redirect URI below.
-The docs page's own client ID, which some community tools copy, is refused (BEATPORT_INTEGRATION_PLAN.md,
-Gate 0: "do not reuse another application's credentials").
+The docs page's own client ID, which some community tools copy, is refused unless
+DISKO_BEATPORT_ALLOW_BORROWED_CLIENT is set (BEATPORT_INTEGRATION_PLAN.md, Gate 0: "do not reuse
+another application's credentials"); the listener turns it on only to try the system before their
+own client ID arrives.
+
+That borrowed client registers no loopback redirect, so it can only send the browser to its own
+`{api}/auth/o/post-message/` page, which immediately redirects away again: the `code` never reaches a
+server disko runs. `OAuth.login(manual=True)` (chosen automatically for a non-loopback redirect)
+prints the sign-in link and asks the listener to paste the code back. Both the loopback and the
+manual flow are the same authorization-code grant; the manual one omits PKCE, which the docs client
+does not use (see the unofficial notes at https://gist.github.com/kemo/506ca56e35b9506ee5233bc4d773c1c8).
 
 Tokens live in memory and in the Keychain, never in files, logs, URLs or messages: errors say what
 went wrong, not what was sent.
@@ -49,6 +58,16 @@ BORROWED_CLIENT_IDS = frozenset({"a4538c20f31a1c93362843ef19159eb08d689fbca509fc
 
 ENV_FILE = Path(os.environ.get("DISKO_ENV_FILE", Path(__file__).resolve().parents[3] / ".env"))
 ENV_CLIENT_ID, ENV_CLIENT_SECRET = "DISKO_BEATPORT_CLIENT_ID", "DISKO_BEATPORT_CLIENT_SECRET"
+ENV_ALLOW_BORROWED = "DISKO_BEATPORT_ALLOW_BORROWED_CLIENT"
+ENV_STREAMING = "DISKO_BEATPORT_STREAMING"
+
+# Where the v4 docs page's own client sends the browser. It can't be a loopback the listener runs,
+# so the manual login reads the code back from the listener instead.
+POST_MESSAGE_PATH = "/auth/o/post-message/"
+
+
+def _truthy(value) -> bool:
+    return str(value or "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def read_env_file(path: Path = ENV_FILE) -> dict:
@@ -85,7 +104,7 @@ _warned = set()
 def env_values() -> dict:
     """The Beatport settings from the .env file, with the process environment taking precedence."""
     values = read_env_file()
-    values.update({k: v for k, v in os.environ.items() if k in (ENV_CLIENT_ID, ENV_CLIENT_SECRET)})
+    values.update({k: v for k, v in os.environ.items() if k in (ENV_CLIENT_ID, ENV_CLIENT_SECRET, ENV_ALLOW_BORROWED)})
     return values
 
 
@@ -95,6 +114,18 @@ def _setting(name: str, default: str) -> str:
 
 API = _setting("DISKO_BEATPORT_API", "https://api.beatport.com/v4").rstrip("/")
 REDIRECT_URI = _setting("DISKO_BEATPORT_REDIRECT", "http://127.0.0.1:8765/callback")
+
+
+def docs_redirect_uri(api: str = API) -> str:
+    """The only redirect URI the docs page's own client accepts, on the same host as `api`."""
+    return api.rstrip("/") + POST_MESSAGE_PATH
+
+
+def streaming_enabled() -> bool:
+    """True when the listener has set DISKO_BEATPORT_STREAMING=1: they assert the signed-in account
+    holds a Beatport Streaming plan whose terms let disko read, decode and analyze its audio on this
+    Mac. Until then the adapter browses only and never touches a stream (Gate 0)."""
+    return _truthy(os.environ.get(ENV_STREAMING) or read_env_file().get(ENV_STREAMING))
 
 
 class NotConfigured(SourceError):
@@ -165,6 +196,11 @@ def borrowed(client_id: str) -> bool:
     return hashlib.sha256(client_id.strip().encode()).hexdigest() in BORROWED_CLIENT_IDS
 
 
+BORROWED_HINT = (f"that is the v4 docs page's own client ID, not one Beatport issued for disko. "
+                 f"Set {ENV_ALLOW_BORROWED}=1 in {ENV_FILE} (or the environment) to use it only to try "
+                 f"the system before your own client ID arrives")
+
+
 @dataclass(frozen=True)
 class Credentials:
     client_id: str
@@ -180,7 +216,8 @@ class Credentials:
     @classmethod
     def load(cls, store, env: dict | None = None) -> "Credentials":
         """From the environment / .env if it names a client ID (the secret then comes from there too),
-        else from the Keychain."""
+        else from the Keychain. A client ID that belongs to another app is refused unless
+        DISKO_BEATPORT_ALLOW_BORROWED_CLIENT is set."""
         env = env_values() if env is None else env
         client_id = (env.get(ENV_CLIENT_ID) or "").strip()
         if client_id:
@@ -191,9 +228,13 @@ class Credentials:
         if not client_id:
             raise NotConfigured(f"no Beatport client ID: put {ENV_CLIENT_ID}=... in {ENV_FILE} (see .env.example) "
                                 f"or run `python -m live.sources.beatport set-client`")
+        if borrowed(client_id) and not _truthy(env.get(ENV_ALLOW_BORROWED)):
+            raise NotConfigured(BORROWED_HINT)
         return cls(client_id, secret, origin)
 
-    def save(self, store):
+    def save(self, store, allow_borrowed: bool = False):
+        if borrowed(self.client_id) and not allow_borrowed:
+            raise NotConfigured(BORROWED_HINT)
         store.set("client_id", self.client_id.strip())
         if self.client_secret:
             store.set("client_secret", self.client_secret.strip())
@@ -267,21 +308,40 @@ def _post_form(url: str, form: dict, timeout: float = HTTP_TIMEOUT_S) -> dict:
         raise SourceTimeout(f"couldn't reach Beatport's sign-in service ({getattr(e, 'reason', e)})") from None
 
 
+def parse_code(text: str) -> str | None:
+    """The authorization code out of whatever the listener pasted: the bare code, the whole redirect
+    URL, or just its query string (a browser shows the code in the URL even when it bounces on)."""
+    text = (text or "").strip().strip('"').strip("'").strip()
+    if not text:
+        return None
+    if "://" in text:
+        query = urllib.parse.urlparse(text).query
+    elif text.startswith("?") or "code=" in text:
+        query = text.lstrip("?")
+    else:
+        return text
+    return (urllib.parse.parse_qs(query).get("code") or [None])[0] or None
+
+
 class OAuth:
     def __init__(self, credentials: Credentials, api: str = API, redirect_uri: str = REDIRECT_URI):
         self.credentials, self.api, self.redirect_uri = credentials, api.rstrip("/"), redirect_uri
 
-    def authorize_url(self, state: str, challenge: str) -> str:
-        query = urllib.parse.urlencode({"client_id": self.credentials.client_id, "response_type": "code",
-                                        "redirect_uri": self.redirect_uri, "state": state,
-                                        "code_challenge": challenge, "code_challenge_method": "S256"})
-        return f"{self.api}/auth/o/authorize/?{query}"
+    def authorize_url(self, state: str | None = None, challenge: str | None = None) -> str:
+        params = {"client_id": self.credentials.client_id, "response_type": "code",
+                  "redirect_uri": self.redirect_uri}
+        if state:
+            params["state"] = state
+        if challenge:
+            params.update(code_challenge=challenge, code_challenge_method="S256")
+        return f"{self.api}/auth/o/authorize/?{urllib.parse.urlencode(params)}"
 
-    def exchange(self, code: str, verifier: str) -> Tokens:
-        data = _post_form(f"{self.api}/auth/o/token/",
-                          {**self.credentials.form(), "grant_type": "authorization_code", "code": code,
-                           "redirect_uri": self.redirect_uri, "code_verifier": verifier})
-        return Tokens.from_response(data)
+    def exchange(self, code: str, verifier: str | None = None) -> Tokens:
+        form = {**self.credentials.form(), "grant_type": "authorization_code", "code": code,
+                "redirect_uri": self.redirect_uri}
+        if verifier:
+            form["code_verifier"] = verifier
+        return Tokens.from_response(_post_form(f"{self.api}/auth/o/token/", form))
 
     def refresh(self, tokens: Tokens) -> Tokens:
         if not tokens.refresh_token:
@@ -298,10 +358,27 @@ class OAuth:
             except SourceError:
                 pass  # signing out locally still happens; the server forgets it when the token expires
 
-    def login(self, open_browser=webbrowser.open, timeout: float = LOGIN_TIMEOUT_S) -> Tokens:
-        """Open Beatport's sign-in page and wait for it to send the browser back to disko."""
+    def _loopback_redirect(self):
         redirect = urllib.parse.urlparse(self.redirect_uri)
-        if redirect.scheme != "http" or redirect.hostname not in ("127.0.0.1", "localhost", "::1") or not redirect.port:
+        if redirect.scheme == "http" and redirect.hostname in ("127.0.0.1", "localhost", "::1") and redirect.port:
+            return redirect
+        return None
+
+    def login(self, open_browser=webbrowser.open, timeout: float = LOGIN_TIMEOUT_S,
+              manual: bool | None = None, prompt=None) -> Tokens:
+        """Sign in. A loopback redirect runs a one-shot server and waits for Beatport to send the
+        browser back; any other redirect (the docs page's own, for a borrowed client ID) prints the
+        link and reads the code back from the listener, because that page redirects away and the code
+        never reaches disko on its own."""
+        if manual is None:
+            # The docs client's post-message page can't be received by a server, so that redirect is
+            # always manual; so is any redirect that isn't a loopback this Mac can listen on.
+            manual = (self._loopback_redirect() is None
+                      or urllib.parse.urlparse(self.redirect_uri).path.endswith(POST_MESSAGE_PATH))
+        if manual:
+            return self._login_manual(open_browser, prompt)
+        redirect = self._loopback_redirect()
+        if redirect is None:
             raise NotConfigured(f"the redirect URI must be http://127.0.0.1:PORT/path on this Mac, not {self.redirect_uri}")
         state = secrets.token_urlsafe(24)
         verifier = secrets.token_urlsafe(64)
@@ -346,6 +423,16 @@ class OAuth:
         if result.get("error") or not result.get("code"):
             raise AuthExpired(f"Beatport didn't sign you in ({result.get('error') or 'no code came back'})")
         return self.exchange(result["code"], verifier)
+
+    def _login_manual(self, open_browser, prompt) -> Tokens:
+        """The docs client redirects to its own post-message page, which bounces on. Show the link,
+        then take the code from the listener (they copy it from the redirect the browser made)."""
+        open_browser(self.authorize_url())
+        answer = (prompt or input)("Paste the code (or the whole redirect URL) and press Enter: ")
+        code = parse_code(answer)
+        if not code:
+            raise AuthExpired("no authorization code was given")
+        return self.exchange(code)
 
 
 class Session:

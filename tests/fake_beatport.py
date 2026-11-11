@@ -10,13 +10,33 @@ uses the field names live/sources/beatport/source.py reads. Run it alone to try 
 import base64
 import hashlib
 import json
+import math
 import secrets
+import struct
 import threading
 import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 KEYS = [(8, "A"), (9, "A"), (8, "B"), (7, "A"), (10, "A"), (5, "A"), (11, "B"), (6, "A"), (12, "A"), (3, "B")]
+
+
+def _wav_bytes(seconds: float = 2.0, sample_rate: int = 44100, bpm: float = 120.0) -> bytes:
+    """A tiny click-track WAV (44.1 kHz stereo) the streaming endpoint can hand back, so decoding a
+    stream can be tested without any real audio. stdlib only."""
+    n = int(seconds * sample_rate)
+    period = sample_rate * 60.0 / bpm
+    frames = bytearray()
+    for i in range(n):
+        t = i / sample_rate
+        env = math.exp(-((i % period) / sample_rate) * 18.0)
+        value = 0.6 * math.sin(2 * math.pi * 90 * t) * env + 0.2 * math.sin(2 * math.pi * 220 * t)
+        sample = int(max(-1.0, min(1.0, value)) * 32000)
+        frames += struct.pack("<hh", sample, sample)
+    header = b"RIFF" + struct.pack("<I", 36 + len(frames)) + b"WAVEfmt "
+    header += struct.pack("<IHHIIHH", 16, 1, 2, sample_rate, sample_rate * 4, 4, 16)
+    header += b"data" + struct.pack("<I", len(frames))
+    return header + bytes(frames)
 
 
 def make_track(i: int, **overrides) -> dict:
@@ -50,7 +70,9 @@ class FakeBeatport:
         self.requests = []                        # (method, path with query, had a bearer header)
         self.lock = threading.Lock()
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
-        self.url = f"http://127.0.0.1:{self.server.server_address[1]}/v4"
+        self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
+        self.url = self.base + "/v4"
+        self.streaming = True   # False: the account holds no streaming plan, so /stream/ answers 403
 
     def start(self):
         threading.Thread(target=self.server.serve_forever, args=(0.05,), daemon=True, name="fake-beatport").start()
@@ -111,6 +133,8 @@ class FakeBeatport:
                     fake.requests.append(("GET", self.path, bearer.startswith("Bearer ")))
                 if url.path == "/v4/auth/o/authorize/":
                     return self._authorize(q)
+                if url.path.startswith("/audio/"):
+                    return self._audio()
                 with fake.lock:
                     token = bearer.removeprefix("Bearer ")
                     if fake.access.get(token, 0) < time.time():
@@ -123,11 +147,17 @@ class FakeBeatport:
             def _authorize(self, q):
                 if q.get("client_id") != fake.client_id or q.get("redirect_uri") not in fake.redirect_uris:
                     return self._json(400, {"error": "invalid_request"})
-                if q.get("response_type") != "code" or q.get("code_challenge_method") != "S256":
+                if q.get("response_type") != "code":
+                    return self._json(400, {"error": "invalid_request"})
+                challenge = q.get("code_challenge")
+                # PKCE is optional here, the way the real docs client uses it: a challenge must be
+                # S256, and its presence must agree with code_challenge_method.
+                if ((challenge and q.get("code_challenge_method") != "S256")
+                        or (not challenge and q.get("code_challenge_method"))):
                     return self._json(400, {"error": "invalid_request"})
                 code = secrets.token_urlsafe(16)
                 with fake.lock:
-                    fake.codes[code] = (q["redirect_uri"], q.get("code_challenge"))
+                    fake.codes[code] = (q["redirect_uri"], challenge)
                 where = q["redirect_uri"] + "?" + urllib.parse.urlencode({"code": code, "state": q.get("state", "")})
                 self.send_response(302)
                 self.send_header("Location", where)
@@ -154,7 +184,9 @@ class FakeBeatport:
                         redirect, challenge = fake.codes.pop(form.get("code"), (None, None))
                         verifier = form.get("code_verifier", "")
                         expected = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=")
-                        if redirect is None or redirect != form.get("redirect_uri") or expected.decode() != challenge:
+                        if redirect is None or redirect != form.get("redirect_uri"):
+                            return self._json(400, {"error": "invalid_grant"})
+                        if challenge and expected.decode() != challenge:
                             return self._json(400, {"error": "invalid_grant"})
                         return self._json(200, fake._issue())
                     if grant == "refresh_token":
@@ -162,6 +194,14 @@ class FakeBeatport:
                             return self._json(400, {"error": "invalid_grant"})
                         return self._json(200, fake._issue())
                     return self._json(400, {"error": "unsupported_grant_type"})
+
+            def _audio(self):
+                data = _wav_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", "audio/wav")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
 
             def _page(self, items, q):
                 page, per_page = int(q.get("page", 1)), int(q.get("per_page", 10))
@@ -175,6 +215,13 @@ class FakeBeatport:
                 parts = [p for p in path.split("/") if p][1:]  # drop "v4"
                 if parts == ["my", "account"]:
                     return self._json(200, {"id": 1, "username": "test-listener"})
+                if len(parts) == 4 and parts[:2] == ["catalog", "tracks"] and parts[3] == "stream":
+                    if not fake.streaming:
+                        return self._json(403, {"detail": "This account has no streaming subscription."})
+                    if not parts[2].isdigit() or int(parts[2]) not in fake.tracks:
+                        return self._json(404, {"detail": "Not found."})
+                    return self._json(200, {"stream_url": f"{fake.base}/audio/{parts[2]}.wav",
+                                            "sample_start_ms": 0, "sample_end_ms": 2000})
                 if parts == ["my", "playlists"]:
                     return self._page([{"id": pid, "name": name, "track_count": len(ids)}
                                        for pid, (name, ids) in sorted(fake.playlists.items())], q)

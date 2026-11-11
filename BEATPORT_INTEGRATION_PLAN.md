@@ -3,7 +3,10 @@
 Status:
 - Milestones 1, 2 (synthetic audio only) and 4 are implemented.
 - Milestone 3: the provider-neutral part is implemented, and so is a Beatport browsing adapter built against a local fake server. It needs only the listener's own client ID and a sign-in. Its permissions (browse, metadata, Kev) are built in; at the listener's request (2026-11-08) the capability matrix is optional and only restricts them.
-- Beatport playback is not built: the stream interface is undocumented, and Gate 0 decides whether disko may decode it.
+- Beatport playback is implemented against the streaming endpoint partners use
+  (`GET /catalog/tracks/{id}/stream/`, which answers with a short-lived encrypted-HLS `stream_url`),
+  but it is off unless the listener asserts an active streaming plan with
+  DISKO_BEATPORT_STREAMING=1, and the account must actually be entitled or Beatport answers 403.
 
 Repository baseline: 47306415d1b94a9597e5fe75113fd94f1c4e7578.
 
@@ -49,7 +52,7 @@ No Beatport credential or audio is in the repository. The only Beatport endpoint
   - A pick whose audio is unavailable, not permitted or unreadable goes on `KevDJ.broken` and is never offered again. Kev picks again at once, and when nothing is left the set ends rather than retrying.
   - Timeouts are retried.
   - `AuthExpired` and `Session.disconnect(source)` stop whatever came from that source and say why; nothing already decoded is assumed to stay authorized.
-- Not built, because each needs the Beatport contract (Gate 0): the connect/disconnect and playlist UI, the just-in-time analysis path (Branch A or B), and incremental streaming buffers.
+- The remaining Milestone 3 UX is not built: the connect/disconnect and playlist-selection UI is now a `--beatport LIST` launch option (live/__main__.py), but there's no in-window picker yet, and the streaming buffers are whole-track rather than incremental.
 
 ### Milestone 3: the Beatport adapter (browsing; built against a fake server)
 - `live/sources/beatport/` implements the documented v4 flow. The order of checks below makes it work once the listener has their own client ID, with no code changes; nothing in it has touched Beatport yet.
@@ -60,7 +63,7 @@ No Beatport credential or audio is in the repository. The only Beatport endpoint
       - If neither is set, they come from the Keychain (`set-client`).
       - disko warns when the `.env` holding a secret is readable by others.
     - Tokens always live in the macOS Keychain (service `disko.beatport`). Values are written through `security -i`'s stdin, so they never show on a command line.
-    - The docs page's own client ID is refused; it's stored as a SHA-256 hash.
+    - The docs page's own client ID is refused and stored only as a SHA-256 hash; `DISKO_BEATPORT_ALLOW_BORROWED_CLIENT=1` overrides that refusal, only to try the system before a real client ID arrives. That client registers no loopback callback, so `login` switches to the docs client's own `{api}/auth/o/post-message/` redirect and takes the code back from the listener (`--no-browser` prints the link and asks for a paste; the manual flow omits PKCE), because the post-message page bounces on and the code never reaches a server disko runs.
   - `api.py`:
     - Every request carries a bearer token.
     - 404 becomes `NotFound` (gone or territory-restricted), 403 becomes `Forbidden`, and 401 after a refresh becomes `AuthExpired`.
@@ -68,8 +71,8 @@ No Beatport credential or audio is in the repository. The only Beatport endpoint
   - `source.py`:
     - `BeatportSource` covers the account's playlists (`my:ID`), curated playlists (`catalog:ID`) and charts (`chart:ID`), and maps Beatport pages onto any offset and limit.
     - `track_info` copies only the catalog's bpm, Camelot key, genre and sub-genre, length, and `is_available_for_streaming`. Its field names come from public v4 clients, because the docs have no response schemas, so it is the one place to correct after the first real call.
-    - `open_audio` is refused by the policy before any request; even if the policy allowed it, there's no stream code.
-  - `__init__.py`: the policy is `default_policy()` (BROWSE, METADATA, SEND_TO_MODEL) unless `capabilities/beatport.json` exists, in which case that file replaces it and fails closed if malformed. `connect`, `login` and `status` check, in order:
+    - `open_audio` is refused by the policy before any request unless the policy allows DECODE; when it does, it fetches `/catalog/tracks/{id}/stream/` and decodes the returned `stream_url` through ffmpeg in memory (no disk). A 403 there is reported as needing a streaming plan.
+  - `__init__.py`: the policy is `default_policy()` (BROWSE, METADATA, SEND_TO_MODEL, plus DECODE, ANALYZE and MIX when `DISKO_BEATPORT_STREAMING=1`) unless `capabilities/beatport.json` exists, in which case that file replaces it and fails closed if malformed. `connect`, `login` and `status` check, in order:
     1. The policy allows BROWSE. Nothing touches the Keychain or the network before this passes.
     2. A client ID is set.
     3. The account is signed in.

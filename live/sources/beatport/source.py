@@ -12,18 +12,26 @@ length. The v4 docs list parameters but no response schemas, so the field names 
 v4 catalog JSON as public open-source clients read it. `track_info` is the one place that knows
 them; check it against a real answer with `python -m live.sources.beatport track ID --raw`.
 
-Audio isn't here. The docs list /catalog/tracks/{id}/stream-sdk/ without saying what it returns
-or what may be done with it, and BEATPORT_INTEGRATION_PLAN.md (Milestone 2) makes playback a
-choice between disko decoding the audio (Branch A) and Beatport's player playing it (Branch B)
-that only the written terms can settle. Until they do, `open_audio` is refused by the policy
-before anything is fetched, and would fail here even if the policy allowed it.
+Audio isn't here in the browsing adapter, but streaming playback is: when the account holds a
+Beatport Streaming plan (DISKO_BEATPORT_STREAMING=1), `_open_audio` fetches
+`/catalog/tracks/{id}/stream/`, which answers with a short-lived `stream_url` (an encrypted HLS
+playlist), and decodes it here through ffmpeg. That URL is the documented-for-partners streaming
+endpoint; the plan is what authorizes it. Nothing is written to disk.
 """
-from ..base import Availability, Operation, Page, PlaylistRef, Source, SourceError, TrackId, TrackInfo
+import shutil
+import subprocess
+
+import numpy as np
+
+from ..base import (AudioHandle, Availability, Operation, Page, PlaylistRef, Source, SourceError, SourceTimeout,
+                    TrackId, TrackInfo, TrackUnavailable)
 from ..policy import Policy
 
 PROVIDER = "beatport"
 PER_PAGE = 100          # Beatport's page size for list calls
 MAX_PLAYLISTS = 500
+SAMPLE_RATE = 44100     # the decks run at this rate (live/audio.py SR)
+FFMPEG_TIMEOUT_S = 180  # decoding a stream longer than this is treated as a stall
 LISTS = {"my": "/my/playlists/{}/tracks/", "catalog": "/catalog/playlists/{}/tracks/",
          "chart": "/catalog/charts/{}/tracks/"}
 
@@ -142,7 +150,54 @@ class BeatportSource(Source):
             raise SourceError(f"{track_id} isn't a Beatport track id")
         return self.client.get(f"/catalog/tracks/{track_id.key}/")
 
-    def _open_audio(self, track_id: TrackId):
-        raise SourceError("Beatport playback isn't built: its stream interface isn't documented, and the "
-                          "written terms decide whether disko may decode it (BEATPORT_INTEGRATION_PLAN.md, "
-                          "Milestone 2)")
+    def _open_audio(self, track_id: TrackId) -> AudioHandle:
+        """The stream URL for this track, which ffmpeg decodes to PCM on read. Beatport answers 403
+        here when the account has no streaming plan; the policy already allowed DECODE before this."""
+        if not track_id.key.isdigit():
+            raise SourceError(f"{track_id} isn't a Beatport track id")
+        try:
+            data = self.client.get(f"/catalog/tracks/{track_id.key}/stream/")
+        except TrackUnavailable as e:
+            raise TrackUnavailable(f"{e}; playing it needs an active Beatport Streaming plan") from None
+        url = data.get("stream_url") if isinstance(data, dict) else None
+        if not isinstance(url, str) or not url:
+            raise SourceError(f"Beatport didn't return a stream URL for {track_id} "
+                              f"(an active Beatport Streaming plan is required)")
+        return StreamAudio(track_id, url)
+
+
+class StreamAudio(AudioHandle):
+    """A Beatport stream decoded to PCM here. The `stream_url` is short-lived and already carries the
+    plan's entitlement, so no token goes with it; ffmpeg handles the encrypted HLS. Nothing is kept
+    on disk: ffmpeg writes the decoded samples to this process's memory."""
+
+    def __init__(self, track_id: TrackId, url: str, sample_rate: int = SAMPLE_RATE):
+        super().__init__(track_id)
+        self.url, self.sample_rate = url, sample_rate
+
+    def _read(self) -> tuple:
+        return decode_stream(self.url, self.sample_rate)
+
+
+def decode_stream(url: str, sample_rate: int = SAMPLE_RATE) -> tuple:
+    """(samples (n, 2) float32, sample_rate): decode an audio/HLS URL through ffmpeg, in memory.
+
+    A Beatport `stream_url` is an AES-128 encrypted HLS playlist, which libsndfile can't read but
+    ffmpeg can, so the stream is piped straight to raw float samples. A missing ffmpeg is reported
+    like any other unreadable track."""
+    ffmpeg = shutil.which("ffmpeg") or "/opt/homebrew/bin/ffmpeg"
+    command = [ffmpeg, "-v", "error", "-nostdin", "-i", url, "-f", "f32le", "-ac", "2",
+               "-ar", str(sample_rate), "-"]
+    try:
+        raw = subprocess.run(command, capture_output=True, timeout=FFMPEG_TIMEOUT_S, check=True).stdout
+    except FileNotFoundError:
+        raise SourceError("decoding a Beatport stream needs ffmpeg on PATH") from None
+    except subprocess.TimeoutExpired:
+        raise SourceTimeout(f"decoding the Beatport stream took longer than {FFMPEG_TIMEOUT_S}s") from None
+    except subprocess.CalledProcessError as e:
+        detail = (e.stderr or b"").decode("utf-8", "replace").strip().splitlines()
+        raise SourceError(f"couldn't decode the Beatport stream ({detail[-1] if detail else e.returncode})") from None
+    samples = np.frombuffer(raw, dtype=np.float32)
+    if samples.size % 2:
+        samples = samples[:-1]
+    return samples.reshape(-1, 2), sample_rate
