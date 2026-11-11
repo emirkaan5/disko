@@ -10,7 +10,7 @@
 #                                    audio through librespot: against Spotify's terms, so it is only
 #                                    built when asked for (see requirements/spotify.txt)
 #
-# Runs on Apple Silicon Macs (stock bash 3.2) and on Linux (x86_64, aarch64).
+# Runs on Apple Silicon Macs (stock bash 3.2) and on x86_64 Linux.
 set -eu
 
 REPO=$(cd -P "$(dirname "$0")/.." && pwd)
@@ -70,9 +70,9 @@ OS=$(uname -s)
 if [ "$OS" = Darwin ] && [ "$(sysctl -n hw.optional.arm64 2>/dev/null || echo 0)" = 1 ]; then
     say "Apple Silicon, macOS $(sw_vers -productVersion)"
     PKG="brew install"
-elif [ "$OS" = Linux ] && { [ "$(uname -m)" = x86_64 ] || [ "$(uname -m)" = aarch64 ]; }; then
+elif [ "$OS" = Linux ] && [ "$(uname -m)" = x86_64 ]; then
     distro=$( (. /etc/os-release 2>/dev/null && echo "$PRETTY_NAME") || echo Linux)
-    say "Linux ($distro, $(uname -m)); the deep pass and Kev run on PyTorch here, on an NVIDIA GPU if"
+    say "Linux ($distro, x86_64); the deep pass and Kev run on PyTorch here, on an NVIDIA GPU if"
     say "there is one, otherwise on the CPU (slower: a track's deep pass takes about as long as the track)"
     if command -v apt-get >/dev/null 2>&1; then PKG="sudo apt-get install -y"
     elif command -v dnf >/dev/null 2>&1; then PKG="sudo dnf install -y"
@@ -96,8 +96,10 @@ elif [ "$OS" = Linux ] && { [ "$(uname -m)" = x86_64 ] || [ "$(uname -m)" = aarc
         [ "$DRY" = 1 ] || exit 1
     fi
 else
-    say "Sorry: disko runs on Apple Silicon Macs and on Linux (x86_64 or aarch64)."
-    say "This machine is $OS $(uname -m)."
+    say "Sorry: disko runs on Apple Silicon Macs and on x86_64 Linux. This machine is $OS $(uname -m)."
+    if [ "$OS" = Linux ]; then
+        say "(On arm64 Linux the fast pass can't install: essentia-tensorflow has no build for it.)"
+    fi
     exit 1
 fi
 

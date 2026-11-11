@@ -2,7 +2,7 @@
 # disko: one command for the app, its control client, setup and the Dock app.
 # Runs from this checkout; symlink it onto your PATH if you like:
 #   ln -s "/path/to/disko/bin/disko" ~/.local/bin/disko
-# Runs on Apple Silicon Macs (stock bash 3.2) and on Linux.
+# Runs on Apple Silicon Macs (stock bash 3.2) and on x86_64 Linux.
 set -eu
 
 # This script's real location, through any chain of symlinks, so `disko` works from anywhere.
@@ -73,7 +73,7 @@ doctor() {
     if [ "$os" = Darwin ] && [ "$(sysctl -n hw.optional.arm64 2>/dev/null || echo 0)" = 1 ]; then
         line "$OK" "Apple Silicon Mac (macOS $(sw_vers -productVersion 2>/dev/null || echo '?')); deep pass and Kev on MLX"
         deep_mods="allin1_mlx mlx essentia soundfile numpy"
-    elif [ "$os" = Linux ] && { [ "$(uname -m)" = x86_64 ] || [ "$(uname -m)" = aarch64 ]; }; then
+    elif [ "$os" = Linux ] && [ "$(uname -m)" = x86_64 ]; then
         gpu="no NVIDIA GPU found: on the CPU, slower"
         command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1 \
             && gpu="NVIDIA GPU: $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -n 1)"
@@ -89,7 +89,7 @@ doctor() {
             line "-" "display: none in this session; the window needs one (disko headless FOLDER works without)"
         fi
     else
-        line "$NO" "machine: this is $os $(uname -m); disko runs on Apple Silicon Macs and on Linux (x86_64, aarch64)"
+        line "$NO" "machine: this is $os $(uname -m); disko runs on Apple Silicon Macs and on x86_64 Linux (essentia-tensorflow, the fast pass, has no arm64 Linux build)"
         blocking=1; fix_mac=1
         deep_mods="allin1_mlx mlx essentia soundfile numpy"
     fi
@@ -208,7 +208,7 @@ print(" ".join(m for m in sys.argv[1:] if importlib.util.find_spec(m) is None))'
         echo "disko can't run yet."
     fi
     if [ "$fix_mac" = 1 ]; then
-        echo "disko runs on Apple Silicon Macs and on Linux (x86_64, aarch64); nothing else will fix that."
+        echo "disko runs on Apple Silicon Macs and on x86_64 Linux; nothing else will fix that."
     elif [ "$fix_uv" = 1 ]; then
         echo "Fix: install uv (curl -LsSf https://astral.sh/uv/install.sh | sh), then run bin/disko setup"
     elif [ "$fix_setup" = 1 ] && [ "$fix_weights" = 1 ]; then
