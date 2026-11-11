@@ -86,19 +86,20 @@ say "uv: $UV ($("$UV" --version | awk '{print $2}'))"
 
 # --- the venvs --------------------------------------------------------------------------------
 
-# One venv per job: essentia-tensorflow clashes with plain essentia.
-VENVS="live:.venv-live:the app fast:.venv-essentia-tf:the fast pass audio:.venv-audio:the deep pass"
+# One venv per job: essentia-tensorflow clashes with plain essentia. The purposes hold spaces, so
+# this is a list of its own and the loop reads the items as they are, never split on those spaces.
+VENVS=("live:.venv-live:the app" "fast:.venv-essentia-tf:the fast pass" "audio:.venv-audio:the deep pass")
 # The Spotify fetch helper's venv reads the account's audio through librespot, which is against
 # Spotify's terms of service, so it is only built when the listener asks for it. Without it a Spotify
 # playlist can be browsed and paused over but not played.
 if [ "$SPOTIFY" = 1 ]; then
-    VENVS="$VENVS spotify:.venv-spotify:the Spotify fetch helper (librespot)"
+    VENVS+=("spotify:.venv-spotify:the Spotify fetch helper")
     if ! command -v ffmpeg >/dev/null 2>&1; then
         say "Note: the fetch helper decodes a fetched track with ffmpeg, which isn't on PATH."
         say "      Install it with \`brew install ffmpeg\`, or a fetch will fail when a track is picked."
     fi
 fi
-for spec in $VENVS; do
+for spec in "${VENVS[@]}"; do
     name=${spec%%:*}
     rest=${spec#*:}
     venv=${rest%%:*}
