@@ -293,7 +293,9 @@ class SourceStore:
         return ok
 
     def save(self):
+        """tracks.csv: one row per track the whole-track fast pass has seen. A track with only a
+        preview's estimates (apply_preview) is in self.tracks but gets no row until then."""
         with self._lock:
-            rows = [pl.csv_row(t, self.fast[uid], "") for uid, t in self.tracks.items()]
+            rows = [pl.csv_row(t, self.fast[uid], "") for uid, t in self.tracks.items() if uid in self.fast]
             self.prepare()
             pl.write_csv(self.csv, rows)

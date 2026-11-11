@@ -9,7 +9,11 @@
 # whatever plan the account holds, the account could be suspended, and it can stop working without
 # notice. scripts/setup.sh --spotify-audio does the two commands above.
 #
-# Decoding a fetched track also needs ffmpeg on PATH (brew install ffmpeg): the decrypted stream is
-# Ogg Vorbis, which libsndfile can't read.
+# The app builds this itself when the listener turns Spotify audio on (live/sources/spotify/helper.py).
+#
+# Decoding a fetched track needs ffmpeg: the decrypted stream is Ogg Vorbis, which libsndfile can't
+# read. One on PATH (brew install ffmpeg) is used first; imageio-ffmpeg's static build is the fallback,
+# so a Mac without Homebrew needs nothing else.
 librespot>=0.0.10,<1
 protobuf==3.20.1        # librespot's own pin, and the reason this is a venv of its own
+imageio-ffmpeg>=0.6,<1    # a static ffmpeg, for a Mac without one

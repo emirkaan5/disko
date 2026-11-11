@@ -40,6 +40,9 @@ HTTP_TIMEOUT_S = 15
 
 ENV_FILE = Path(os.environ.get("DISKO_ENV_FILE", Path(__file__).resolve().parents[3] / ".env"))
 ENV_CLIENT_ID = "DISKO_SPOTIFY_CLIENT_ID"
+# The client ID a release build of disko.app carries (scripts/make_app.sh bakes it into the bundle and
+# its launcher sets this). Only a fallback: a listener's own client ID, in .env or the Keychain, wins.
+ENV_APP_CLIENT_ID = "DISKO_SPOTIFY_APP_CLIENT_ID"
 
 
 def _setting(name: str, default: str) -> str:
@@ -61,13 +64,16 @@ class KeychainStore(_KeychainStore):
 
 
 def client_id(store, env: dict | None = None) -> str:
-    """The listener's Spotify app client ID: the environment / .env first, then the Keychain."""
+    """The Spotify app client ID: the environment / .env first, then the Keychain (the listener's own),
+    then the one a release build of disko.app carries."""
     env = {**parse_env(ENV_FILE), **os.environ} if env is None else env
-    value = (env.get(ENV_CLIENT_ID) or "").strip() or (store.get("client_id") or "").strip()
+    value = ((env.get(ENV_CLIENT_ID) or "").strip() or (store.get("client_id") or "").strip()
+             or (env.get(ENV_APP_CLIENT_ID) or "").strip())
     if not value:
         raise NotConfigured(f"no Spotify client ID: create an app at https://developer.spotify.com/dashboard "
-                            f"with the redirect URI {REDIRECT_URI}, then put {ENV_CLIENT_ID}=... in {ENV_FILE} "
-                            f"or run `python -m live.sources.spotify set-client`")
+                            f"with the redirect URI {REDIRECT_URI}, then paste its client ID on disko's Spotify "
+                            f"page, put {ENV_CLIENT_ID}=... in {ENV_FILE}, or run "
+                            f"`python -m live.sources.spotify set-client`")
     return value
 
 

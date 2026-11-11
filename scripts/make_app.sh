@@ -3,6 +3,16 @@
 #
 #   scripts/make_app.sh             build dist/disko.app
 #   scripts/make_app.sh --install   build it, then copy it to ~/Applications
+#   scripts/make_app.sh --spotify-client-id ID
+#                                   carry this Spotify client ID in the app (a release build)
+#   scripts/make_app.sh --no-spotify-client-id
+#                                   carry none: the app asks whoever opens it for their own
+#
+# The Spotify client ID the app carries comes from, in order: --spotify-client-id, then
+# DISKO_SPOTIFY_CLIENT_ID in the environment or .env, then the Keychain (what `set-client` or the
+# Spotify page saved). With none of those the app asks for one on its Spotify page. A listener's own
+# client ID always wins over the one carried (live/sources/spotify/auth.py client_id). It is not a
+# secret: Spotify's PKCE sign-in needs no client secret, and none is ever put in the app.
 #
 # The app is not self-contained: it runs this checkout's .venv-live, and this checkout's path is
 # baked into it when it is built. Move or rename the checkout and the app stops working; build it
@@ -17,13 +27,39 @@ MIN_MACOS=13.0                   # PySide6 6.11's wheels need macOS 13
 
 REPO=$(cd -P "$(dirname "$0")/.." && pwd)
 INSTALL=0
-for arg in "$@"; do
-    case $arg in
+CLIENT_ID=
+CLIENT_SOURCE=
+NO_CLIENT=0
+while [ $# -gt 0 ]; do
+    case $1 in
         --install) INSTALL=1 ;;
-        -h|--help) sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-        *) echo "make_app.sh: unknown option $arg (try --help)" >&2; exit 2 ;;
+        --spotify-client-id)
+            [ $# -ge 2 ] && [ -n "$2" ] || { echo "make_app.sh: --spotify-client-id needs a value" >&2; exit 2; }
+            CLIENT_ID=$2; CLIENT_SOURCE="--spotify-client-id"; shift ;;
+        --spotify-client-id=*) CLIENT_ID=${1#*=}; CLIENT_SOURCE="--spotify-client-id" ;;
+        --no-spotify-client-id) NO_CLIENT=1 ;;
+        -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *) echo "make_app.sh: unknown option $1 (try --help)" >&2; exit 2 ;;
     esac
+    shift
 done
+
+# The Spotify client ID to carry, if any (see the top of this file).
+if [ "$NO_CLIENT" = 1 ]; then
+    CLIENT_ID=
+elif [ -z "$CLIENT_ID" ] && [ -n "${DISKO_SPOTIFY_CLIENT_ID:-}" ]; then
+    CLIENT_ID=$DISKO_SPOTIFY_CLIENT_ID; CLIENT_SOURCE="DISKO_SPOTIFY_CLIENT_ID"
+elif [ -z "$CLIENT_ID" ] && [ -f "$REPO/.env" ] \
+        && value=$(sed -n 's/^[[:space:]]*DISKO_SPOTIFY_CLIENT_ID[[:space:]]*=[[:space:]]*["'"'"']\{0,1\}\([^"'"'"'[:space:]]*\).*/\1/p' "$REPO/.env" | tail -n 1) \
+        && [ -n "$value" ]; then
+    CLIENT_ID=$value; CLIENT_SOURCE=".env"
+elif [ -z "$CLIENT_ID" ] && value=$(/usr/bin/security find-generic-password -s disko.spotify -a client_id -w 2>/dev/null) \
+        && [ -n "$value" ]; then
+    CLIENT_ID=$value; CLIENT_SOURCE="the Keychain"
+fi
+case $CLIENT_ID in
+    *[!A-Za-z0-9]*) echo "make_app.sh: that Spotify client ID has characters a client ID never has" >&2; exit 2 ;;
+esac
 
 LIVE_PY="$REPO/.venv-live/bin/python"
 if [ ! -x "$LIVE_PY" ]; then
@@ -49,6 +85,14 @@ iconutil -c icns -o "$C/Resources/disko.icns" "$work/disko.iconset"
 
 # --- where the checkout is ------------------------------------------------------------------
 printf '%s\n' "$REPO" > "$C/Resources/checkout"
+
+# --- the Spotify client ID it carries, if any ------------------------------------------------
+if [ -n "$CLIENT_ID" ]; then
+    printf '%s\n' "$CLIENT_ID" > "$C/Resources/spotify-client-id"
+    echo "  Spotify client ID: carried (from $CLIENT_SOURCE, ending …${CLIENT_ID#"${CLIENT_ID%????}"})"
+else
+    echo "  Spotify client ID: none carried; the app asks for one on its Spotify page"
+fi
 
 # --- the interpreter, as the bundle's own executable -----------------------------------------
 # A framework build of Python (Homebrew's, python.org's) runs as Python.app, so a window opened
@@ -107,11 +151,22 @@ else
 fi
 cd "$REPO"
 
+# The Spotify client ID a release build carries; a listener's own (.env, Keychain) wins over it.
+if [ -s "$contents/Resources/spotify-client-id" ]; then
+    DISKO_SPOTIFY_APP_CLIENT_ID=$(head -n 1 "$contents/Resources/spotify-client-id")
+    export DISKO_SPOTIFY_APP_CLIENT_ID
+fi
+
 if [ "$CHECK" = 1 ]; then
     echo "✓ checkout: $REPO"
     echo "✓ .venv-live: $LIVE_PY"
     echo "  interpreter: $interp"
     echo "  log: $LOG"
+    if [ -n "${DISKO_SPOTIFY_APP_CLIENT_ID:-}" ]; then
+        echo "  Spotify client ID: carried by this build"
+    else
+        echo "  Spotify client ID: none carried (the app asks for one)"
+    fi
     exec "$interp" -I -c 'import ctypes, ctypes.util, os, subprocess, sys
 cf = ctypes.cdll.LoadLibrary(ctypes.util.find_library("CoreFoundation"))
 cf.CFBundleGetMainBundle.restype = ctypes.c_void_p

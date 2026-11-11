@@ -12,8 +12,11 @@
                                                                # the control socket is on by default
     .venv-live/bin/python -m live --headless --playlist DIR   # no window: Kev DJs, controlled through live.ctl
     .venv-live/bin/python -m live --snapshot out.png --scenario mix   # render offscreen, no sound
+    .venv-live/bin/python -m live -v                       # log Kev's picks and mix plans to the terminal
+    .venv-live/bin/python -m live -vv                      # ...and every prompt sent to Kev and its answer
 """
 import argparse
+import logging
 import os
 import sys
 import time
@@ -170,7 +173,7 @@ def headless(args, tcp) -> int:
     from .control import write_install_record
     from .engine import Engine
     from .indexer import DeepAnalyzer, FastIndexer
-    from .kev import Kev
+    from .models import make_model
     from .library import Library
     from .playlist import Playlist
     from .runtime import close_session_temp
@@ -187,7 +190,7 @@ def headless(args, tcp) -> int:
 
     analyzer = None
     if args.fake:
-        library, analyzer = analyzed(fake_source(args.fake))
+        library, analyzer = analyzed(*fake_source(args.fake))
     elif args.beatport:
         library, analyzer = analyzed(*beatport_pool(args.beatport, args.beatport_limit))
     elif args.spotify:
@@ -218,7 +221,7 @@ def headless(args, tcp) -> int:
               file=sys.stderr)
         return 2
     write_install_record()
-    kev = Kev()
+    kev = make_model()  # the DJ model chosen on the welcome screen (live/models.py)
     engine = Engine()
     session = Session(library, engine, kev, prepare, prepare_synced, analyzer=analyzer)  # owned by this thread
     live = {}
@@ -363,6 +366,18 @@ def analyzed(source, tracks: list, name: str):
     return Library(tracks, name=name), analyzer
 
 
+def setup_logging(verbose: int):
+    """Kev's decisions (live/dj.py, live/kev.py) go to stderr at -v; its raw traffic at -vv."""
+    if not verbose:
+        return
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(logging.Formatter("%(asctime)s.%(msecs)03d %(name)-10s %(message)s", "%H:%M:%S"))
+    root = logging.getLogger("disko")
+    root.addHandler(handler)
+    root.setLevel(logging.DEBUG if verbose > 1 else logging.INFO)
+    root.propagate = False
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--playlist", help="open this folder instead of showing the welcome screen")
@@ -402,7 +417,11 @@ def main():
     ap.add_argument("--riser-end", choices=["cut", "release"], help="how a riser ends (snapshot)")
     ap.add_argument("--at", type=float, default=95.0, help="seconds into the opening track (snapshot)")
     ap.add_argument("--progress", type=float, default=0.5, help="how far into the transition, or the indexing (snapshot)")
+    ap.add_argument("-v", "--verbose", action="count", default=int(os.environ.get("DISKO_VERBOSE") or 0),
+                    help="log what Kev is doing to the terminal: -v its picks and mix plans, -vv also every "
+                         "prompt and answer (or set DISKO_VERBOSE=1/2)")
     args = ap.parse_args()
+    setup_logging(args.verbose)
     if args.snapshot:
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     tcp = None
@@ -419,7 +438,7 @@ def main():
     from .engine import Engine
     from .runtime import close_session_temp
     from .indexer import DeepAnalyzer
-    from .kev import Kev
+    from .models import make_model
     from .library import Library
     from .playlist import Playlist
     from .ui import theme
@@ -457,12 +476,13 @@ def main():
 
     from .control import write_install_record
     write_install_record()
-    kev = Kev()
+    made = []  # the DJ model each set was given, stopped on exit (Kev's server, if this run started it)
     live = {}
 
     def open_set(library, analyzer=None, geometry=None):
         engine = Engine()
-        win = MainWindow(library, engine, kev=kev, analyzer=analyzer)
+        made.append(make_model())  # now, so a model chosen on the welcome screen is the one used
+        win = MainWindow(library, engine, kev=made[-1], analyzer=analyzer)
         if geometry is not None:
             win.setGeometry(geometry)
         if args.volume is not None:
@@ -512,7 +532,8 @@ def main():
     if "engine" in live:
         live["engine"].close()
     close_session_temp()
-    kev.stop()
+    for model in made:
+        model.stop()
     sys.exit(code)
 
 

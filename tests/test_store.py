@@ -231,6 +231,12 @@ class PreviewAndFullPassTest(Stubbed):
         self.assertEqual(self.store.pending([self.track]), [])   # the full pass waits for the pick
         self.assertTrue(self.store.preview_only(self.track))
 
+    def test_saving_skips_tracks_that_only_have_a_clip(self):
+        self.store.apply_preview(self.track, self.RESULTS, "itunes")
+        self.store.save()   # used to raise KeyError: a preview-only track has no fast results
+        with open(self.store.csv) as f:
+            self.assertEqual(list(csv.DictReader(f)), [])
+
     def test_a_saved_clip_is_applied_again_without_being_analyzed_again(self):
         self.store.apply_preview(self.track, self.RESULTS, "deezer")
         fresh = self.src.library_tracks()[0]

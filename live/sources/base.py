@@ -87,6 +87,7 @@ class PlaylistRef:
     id: str
     name: str
     track_count: int | None = None   # None: the source doesn't say
+    image: str | None = None         # a small cover image's https URL, if the source has one
 
 
 @dataclass(frozen=True)

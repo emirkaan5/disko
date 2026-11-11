@@ -15,6 +15,7 @@ from ..audio import SR, Deck, load_deck, sync_ratio
 from ..engine import Engine
 from ..indexer import DeepAnalyzer
 from ..kev import Kev
+from ..models import make_model
 from ..library import MAX_STRETCH, Library, Track, tempo_match
 from .. import mixes
 from ..mixes import LANE_DEFAULTS, TECHNIQUES, Plan, Scheduled, build
@@ -189,7 +190,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.library, self.engine, self.analyzer = library, engine, analyzer
         self.pool = pool or ThreadPoolExecutor(max_workers=3)
-        self.kev = kev or Kev()
+        self.kev = kev or make_model()
         # The set itself (what plays, what's queued, Kev's decisions) lives in the session; this
         # window owns it (it runs on the UI thread) and is a view over it, plus the hand-DJ planner.
         self.session = Session(library, engine, self.kev, prepare, prepare_synced, pool=self.pool, analyzer=analyzer)

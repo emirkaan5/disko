@@ -51,6 +51,10 @@ def follow(url: str):
         r.read()
 
 
+def setUpModule():
+    from helpers import isolate_spotify_consent
+    isolate_spotify_consent(unittest.addModuleCleanup)
+
 class Base(unittest.TestCase):
     renamed_api = True
 
@@ -92,6 +96,13 @@ class GateTest(Base):
         self.assertIn("not signed in", spotify.status(store=self.store, env={}).reason)
         self.sign_in()
         self.assertTrue(spotify.status(store=self.store, env={}).usable)
+
+    def test_the_client_id_an_app_carries_is_only_a_fallback(self):
+        carried = {"DISKO_SPOTIFY_APP_CLIENT_ID": "release-id"}
+        self.assertEqual(auth.client_id(spotify.MemoryStore(), carried), "release-id")
+        self.assertEqual(auth.client_id(spotify.MemoryStore({"client_id": "own-id"}), carried), "own-id")
+        self.assertEqual(auth.client_id(spotify.MemoryStore(), {**carried, "DISKO_SPOTIFY_CLIENT_ID": "env-id"}),
+                         "env-id")
 
     def test_client_id_from_env_wins(self):
         self.assertEqual(auth.client_id(self.store, {"DISKO_SPOTIFY_CLIENT_ID": " env-id "}), "env-id")
@@ -158,6 +169,16 @@ class BrowseTest(Base):
         playlists = self.source().playlists()
         self.assertEqual(playlists[0].id, spotify.LIKED)
         self.assertEqual([(p.name, p.track_count) for p in playlists[1:]], [("Warm-up", 34), ("Empty", 0)])
+
+    def test_a_playlist_cover_is_the_smallest_image_still_big_enough(self):
+        from live.sources.spotify.source import _cover
+        big, mid, small = ({"url": f"https://i.scdn.co/image/{w}", "width": w, "height": w} for w in (640, 300, 60))
+        self.assertEqual(_cover({"images": [big, mid, small]}), mid["url"])
+        self.assertEqual(_cover({"images": [small]}), small["url"])                       # all there is
+        self.assertEqual(_cover({"images": [{"url": "https://mosaic.scdn.co/a", "width": None}]}),
+                         "https://mosaic.scdn.co/a")                                       # unsized mosaics
+        self.assertIsNone(_cover({"images": None}))
+        self.assertIsNone(_cover({"images": [{"url": "http://plain.example/a"}]}))        # https only
 
     def test_playlist_tracks_page_and_map(self):
         src = self.source()

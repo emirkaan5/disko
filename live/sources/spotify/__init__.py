@@ -6,6 +6,7 @@ read catalog metadata, and - only after the listener turns it on themselves - re
     api.py      Web API calls with bounded retries and mapped errors
     source.py   SpotifySource: playlists, tracks, metadata, and its audio through the fetch helper
     fetch.py    the fetch helper as a process: librespot decrypts a track into the session temp folder
+    helper.py   the fetch helper's environment and its own sign-in, set up from the window
     consent.py  the listener's own decision about audio, and the warning shown where it is made
     __main__.py python -m live.sources.spotify set-client | login | status | audio | playlists | tracks | track | logout
 
@@ -97,6 +98,8 @@ class GateStatus:
     reason: str
     audio: bool = False  # the listener turned Spotify audio on
     audio_since: str = ""
+    audio_ready: bool = False   # the fetch helper is installed and signed in (helper.py)
+    audio_missing: str = ""     # what is left before it is, in the listener's words
 
     @property
     def usable(self) -> bool:
@@ -108,17 +111,24 @@ def status(policy: Policy | None = None, store=None, env: dict | None = None, se
     policy = policy or load_policy(settings=settings)
     allowed = tuple(op.name for op in Operation if policy.allows(op))
     on, when = bool(choice and choice.audio), (choice.date if choice else "")
+    if on:
+        from .helper import readiness
+        ready = readiness()
+        audio = dict(audio_ready=ready.ready, audio_missing="" if ready.ready else ready.summary)
+    else:
+        audio = {}
     if not policy.agreement or not policy.allows(Operation.BROWSE):
-        return GateStatus(False, False, False, allowed, policy.reason or "browsing Spotify isn't allowed", on, when)
+        return GateStatus(False, False, False, allowed, policy.reason or "browsing Spotify isn't allowed", on, when,
+                          **audio)
     store = store if store is not None else KeychainStore()
     try:
         client_id(store, env)
     except NotConfigured as e:
-        return GateStatus(True, False, False, allowed, str(e), on, when)
+        return GateStatus(True, False, False, allowed, str(e), on, when, **audio)
     if Tokens.load(store) is None:
         return GateStatus(True, True, False, allowed, "not signed in: run `python -m live.sources.spotify login`",
-                          on, when)
-    return GateStatus(True, True, True, allowed, "ready", on, when)
+                          on, when, **audio)
+    return GateStatus(True, True, True, allowed, "ready", on, when, **audio)
 
 
 def _authorized(policy: Policy) -> Policy:

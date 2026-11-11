@@ -1,5 +1,7 @@
 """Shared test pieces: a deterministic stand-in for Kev and a session on the synthetic catalog."""
+import tempfile
 import time
+from pathlib import Path
 
 from live.audio import SR, load_deck, sync_ratio
 from live.engine import Engine
@@ -75,3 +77,17 @@ def run_until(session, engine, done, timeout=60.0, step=SR // 20):
             engine.advance(step)
         time.sleep(0.005)
     return done()
+
+
+def isolate_spotify_consent(case_module_cleanup) -> Path:
+    """Point the default Spotify audio choice (~/.disko/spotify/consent.json) at an empty temp file for
+    the whole test module, so no test reads the listener's real choice or clears it (logout does).
+    Call from setUpModule with unittest.addModuleCleanup."""
+    from live.sources.spotify.consent import ConsentStore
+    tmp = tempfile.TemporaryDirectory()
+    path = Path(tmp.name) / "spotify" / "consent.json"
+    defaults = ConsentStore.__init__.__defaults__
+    ConsentStore.__init__.__defaults__ = (path,)
+    case_module_cleanup(lambda: setattr(ConsentStore.__init__, "__defaults__", defaults))
+    case_module_cleanup(tmp.cleanup)
+    return path

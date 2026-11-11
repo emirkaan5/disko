@@ -33,7 +33,9 @@ Usage:
   disko doctor                  check that everything disko needs is in place
   disko help                    this text
 
-App flags are passed straight to `python -m live`; `disko --help` lists them.
+App flags are passed straight to `python -m live`; `disko --help` lists them. Add -v to see
+what Kev is doing as it picks and plans each mix, or -vv for every prompt and answer too
+(e.g. disko -v, disko headless ~/Music/set -vv; or set DISKO_VERBOSE=1).
 EOF
 }
 
@@ -115,7 +117,7 @@ print(" ".join(m for m in sys.argv[1:] if importlib.util.find_spec(m) is None))'
     if [ -x .venv-spotify/bin/python ]; then
         line "$OK" ".venv-spotify (Spotify audio): $(.venv-spotify/bin/python -V 2>&1)"
     elif grep -q '"audio": *true' "$HOME/.disko/spotify/consent.json" 2>/dev/null; then
-        line "$NO" ".venv-spotify (Spotify audio): missing while audio is turned on; run scripts/setup.sh --spotify-audio (see requirements/spotify.txt)"
+        line "$NO" ".venv-spotify (Spotify audio): missing while audio is turned on; finish setting it up on the app's Spotify page, or run scripts/setup.sh --spotify-audio"
         fix_setup=1
     else
         line "$UNK" ".venv-spotify (Spotify audio): not built (only needed if you turn Spotify audio on)"

@@ -64,8 +64,8 @@ class Fetcher:
         if self._proc is not None and self._proc.poll() is None:
             return
         if not self.python.exists():
-            raise SourceError(f"Spotify audio needs the fetcher's own environment ({self.python}); "
-                              f"run scripts/setup.sh --spotify-audio (requirements/spotify.txt) once")
+            raise AuthExpired("Spotify audio isn't set up yet: open the Spotify page and finish setting it up "
+                              "(it installs the audio helper and signs you in for audio)")
         self.folder.mkdir(parents=True, exist_ok=True)
         command = [str(self.python), str(self.helper)]
         if self.backend:

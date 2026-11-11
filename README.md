@@ -119,7 +119,7 @@ The v4 docs don't show response formats, so check the field mapping (`track_info
 
 disko can sign in to Spotify with your own developer app, list your playlists and Liked Songs, and read a track's metadata, ISRC and market availability. It carries no tempo or key, so what a track sounds like is measured instead: a 30 s preview of every track in the playlist makes the pool, and the whole track is fetched and analysed only when it is about to play. See `SPOTIFY_INTEGRATION_PLAN.md`.
 
-Browsing needs one thing: **your own client ID**, from a Spotify developer app with `http://127.0.0.1:8766/callback` registered as its redirect URI. The client ID is not a secret, so it goes in the environment or the Keychain:
+Browsing needs one thing: **your own client ID**, from a Spotify developer app with `http://127.0.0.1:8766/callback` registered as its redirect URI. Paste it on the window's Spotify page, or, since it is not a secret, put it in the environment or the Keychain from a terminal:
 
 ```bash
 .venv-live/bin/python -m live.sources.spotify set-client        # stores it in the Keychain
@@ -134,7 +134,7 @@ To play a set from one of them, pass the playlist to `live` (an id, a link or `l
 .venv-live/bin/python -m live --spotify liked --spotify-limit 50
 ```
 
-That only works once you have turned Spotify audio on, in the window's Spotify page or with `audio on`, after reading what it means; there is no other switch, no environment variable and no capability matrix that can turn it on. Audio then comes through librespot, an unofficial client, which is **against Spotify's terms of service** whatever plan the account holds: the account could be suspended, and it can stop working without notice. The switch is off until you turn it on yourself, and signing out clears it. It needs `scripts/setup.sh --spotify-audio` (the fetcher's own venv, `requirements/spotify.txt`) and ffmpeg. Nothing is recorded or exported, and decoded audio lives only in the session's temp folder.
+That only works once you have turned Spotify audio on, in the window's Spotify page or with `audio on`, after reading what it means; there is no other switch, no environment variable and no capability matrix that can turn it on. Audio then comes through librespot, an unofficial client, which is **against Spotify's terms of service** whatever plan the account holds: the account could be suspended, and it can stop working without notice. The switch is off until you turn it on yourself, and signing out clears it. Turning it on in the window also sets it up there: disko builds the fetcher's own venv (`.venv-spotify`, `requirements/spotify.txt`, which brings a static ffmpeg) with uv, then opens librespot's own sign-in in the browser. `scripts/setup.sh --spotify-audio` and `.venv-spotify/bin/python live/workers/spotify_fetch.py --login` do the same from a terminal. Nothing is recorded or exported, and decoded audio lives only in the session's temp folder.
 
 Nothing here has been run against a real Spotify account yet. The first run, step by step, with what each step should print and what a failure at that step means, is the checklist at the end of `SPOTIFY_INTEGRATION_PLAN.md`; write what you saw into its "Real run results".
 

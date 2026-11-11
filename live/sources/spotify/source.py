@@ -83,6 +83,17 @@ def track_info(data: dict) -> TrackInfo | None:
                      isrc=isrc.strip().upper() if isinstance(isrc, str) and isrc.strip() else None)
 
 
+def _cover(playlist: dict, want: int = 120) -> str | None:
+    """The smallest of a playlist's cover images that is still `want` px wide (or the largest there
+    is); Spotify lists them largest first, and some have no size at all."""
+    images = [i for i in (playlist.get("images") or []) if isinstance(i, dict)
+              and isinstance(i.get("url"), str) and i["url"].startswith("https://")]
+    if not images:
+        return None
+    sized = sorted(images, key=lambda i: i.get("width") or 0)
+    return next((i["url"] for i in sized if (i.get("width") or 0) >= want), sized[-1]["url"])
+
+
 def _count(playlist: dict) -> int | None:
     for field in ("items", "tracks"):
         total = (playlist.get(field) or {}).get("total") if isinstance(playlist.get(field), dict) else None
@@ -111,7 +122,7 @@ class SpotifySource(Source):
             items, total = self.client.page("/me/playlists", offset, PER_PAGE)
             for p in items:
                 if isinstance(p, dict) and isinstance(p.get("id"), str):
-                    out.append(PlaylistRef(p["id"], p.get("name") or "Untitled playlist", _count(p)))
+                    out.append(PlaylistRef(p["id"], p.get("name") or "Untitled playlist", _count(p), _cover(p)))
             offset += len(items)
             if not items or (total is not None and offset >= total):
                 break

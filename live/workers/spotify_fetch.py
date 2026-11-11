@@ -70,7 +70,17 @@ class FetchFailed(Exception):
 
 
 def ffmpeg() -> str:
-    return shutil.which("ffmpeg") or "/opt/homebrew/bin/ffmpeg"
+    """ffmpeg on PATH or Homebrew's, else the static one imageio-ffmpeg brings into this environment
+    (requirements/spotify.txt), so a Mac without ffmpeg can still decode a fetched track."""
+    found = shutil.which("ffmpeg") or next((p for p in ("/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg")
+                                            if os.access(p, os.X_OK)), None)
+    if found:
+        return found
+    try:
+        import imageio_ffmpeg
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:  # not installed, or its binary is missing: decode() says what to do
+        return "ffmpeg"
 
 
 def decode(container: Path, dest: Path):
@@ -81,7 +91,8 @@ def decode(container: Path, dest: Path):
     try:
         r = subprocess.run(command, capture_output=True, timeout=FETCH_TIMEOUT_S)
     except FileNotFoundError:
-        raise FetchFailed("decoding a fetched track needs ffmpeg on PATH") from None
+        raise FetchFailed("decoding a fetched track needs ffmpeg: set up Spotify audio again on disko's "
+                          "Spotify page (it installs one), or brew install ffmpeg") from None
     except subprocess.TimeoutExpired:
         raise FetchFailed(f"ffmpeg took longer than {FETCH_TIMEOUT_S}s on the fetched track", "timeout") from None
     if r.returncode != 0 or not dest.exists() or dest.stat().st_size == 0:
@@ -108,7 +119,8 @@ class PythonBackend:
         if self._session is None:
             if not self.credentials.exists():
                 raise FetchFailed(f"no Spotify sign-in for the fetcher at {self.credentials}: "
-                                  f"run live/workers/spotify_fetch.py --login once", "auth")
+                                  f"sign in for audio on disko's Spotify page, or run "
+                                  f"live/workers/spotify_fetch.py --login once", "auth")
             from librespot.core import Session
             conf = (Session.Configuration.Builder()
                     .set_stored_credential_file(str(self.credentials))
@@ -215,10 +227,10 @@ def login(credentials: Path = CREDENTIALS, open_browser=None, cache: Path | None
             .set_cache_dir(str(cache)).build())
 
     def show(url: str):
+        # The link is printed either way: the app shows it if the browser didn't open.
+        print(f"Open this link in a browser and approve disko:\n{url}", file=sys.stderr, flush=True)
         if open_browser:
             open_browser(url)
-        else:
-            print(f"Open this link in a browser and approve disko:\n{url}", file=sys.stderr, flush=True)
 
     session = Session.Builder(conf).set_device_name("disko").oauth(show).create()
     print(f"fetcher sign-in kept in {credentials}", file=sys.stderr)
@@ -240,8 +252,9 @@ def missing_librespot() -> str | None:
     if importlib.util.find_spec("librespot") is not None:
         return None
     return (f"librespot isn't installed in this environment ({sys.executable}).\n"
-            f"This helper runs in one of its own: scripts/setup.sh --spotify-audio "
-            f"(requirements/spotify.txt), then run it with .venv-spotify/bin/python.")
+            f"This helper runs in one of its own: set up Spotify audio on disko's Spotify page, or "
+            f"scripts/setup.sh --spotify-audio (requirements/spotify.txt), then run it with "
+            f".venv-spotify/bin/python.")
 
 
 def main(argv=None) -> int:
@@ -253,6 +266,8 @@ def main(argv=None) -> int:
     ap.add_argument("--quality", choices=sorted(QUALITIES), default="very_high")
     ap.add_argument("--timeout", type=float, default=FETCH_TIMEOUT_S)
     ap.add_argument("--login", action="store_true", help="sign in once, through the browser, and exit")
+    ap.add_argument("--open-browser", action="store_true",
+                    help="with --login: open the sign-in link in the browser instead of only printing it")
     ap.add_argument("--track", help="fetch this one track id and exit (Gate 0)")
     ap.add_argument("--out", help="where to write the WAV (with --track)")
     args = ap.parse_args(argv)
@@ -262,7 +277,8 @@ def main(argv=None) -> int:
         if missing:
             print(missing, file=sys.stderr)
             return 2
-        login(Path(args.credentials))
+        import webbrowser
+        login(Path(args.credentials), open_browser=webbrowser.open if args.open_browser else None)
         return 0
     if args.track and args.out:
         if missing:
@@ -294,7 +310,8 @@ def main(argv=None) -> int:
             return 2
         backend = backend_for(args)
         if isinstance(backend, PythonBackend) and not Path(args.credentials).exists():
-            say(event="fatal", error=f"no sign-in for the fetcher at {args.credentials}; run --login once")
+            say(event="fatal", error=f"no Spotify sign-in for audio yet ({args.credentials}): "
+                                     f"finish setting up Spotify audio on disko's Spotify page")
             return 1
         say(event="ready", backend=backend.name, quality=args.quality)
         for line in sys.stdin:

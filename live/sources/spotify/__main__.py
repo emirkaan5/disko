@@ -112,6 +112,8 @@ def main(argv=None) -> int:
                   f"{'' if gate.configured or not gate.authorized else f' (put {ENV_CLIENT_ID} in {ENV_FILE})'}")
             print(f"signed in:    {'yes' if gate.signed_in else 'no' if gate.configured else 'not checked'}")
             print(f"audio:        {'on since ' + gate.audio_since if gate.audio else 'off (browsing only)'}")
+            if gate.audio:
+                print(f"audio helper: {'ready' if gate.audio_ready else 'still to do: ' + gate.audio_missing}")
             print(f"allowed:      {', '.join(gate.allowed) or 'nothing'}")
             print(f"status:       {gate.reason}")
             if gate.usable:
