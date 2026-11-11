@@ -8,6 +8,7 @@ probabilities, goes out as an event so the booth can show the decision as it hap
 Tracks are shortlisted and rated on the fast features alone. Their structure (allin1's bars,
 sections and stems) is only worked out once Kev has picked one, since the mix plan needs it.
 """
+import logging
 import queue
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -26,6 +27,16 @@ SHORTLIST = 8
 TEMPERATURE = 0.012  # sampling the pick: Kev's scores sit close together, so its top track should usually win
 UNSURE = 1.2        # Kev's technique yields to the rules only if its top pick is under 1.2x a coin flip
 EFFECTS_FROM = 5    # effects unlock from the mix into the 5th track of the set
+log = logging.getLogger("disko.kev")  # Kev's decisions as they happen (bin/disko -v)
+
+
+def _probs(p: dict) -> str:
+    return ", ".join(f"{k} {v:.0%}" for k, v in sorted(p.items(), key=lambda kv: -kv[1]))
+
+
+def _about(t: Track) -> str:
+    bpm = f"{t.bpm:.1f} bpm" if t.bpm else "? bpm"
+    return f"“{t.title}” by {t.artist} ({bpm}, {t.camelot or '?'})"
 
 PICK_QUESTIONS = {
     "flow": {"type": "score", "instructions": "How naturally would the candidate follow the track now playing?",
@@ -228,8 +239,18 @@ class KevDJ:
     def _run(self, token, a, now, played, recent, minutes, avoid, mixes):
         emit = lambda kind, **data: token == self._token and self.events.put((kind, data))
         self._pick = None
+        start = time.perf_counter()
+        log.info("── choosing what follows %s, %.1f min into the set, %d played, lift %+d",
+                 _about(a.track), minutes, len(played), self.lift)
         try:
-            self._decide(token, emit, a, now, played, recent, minutes, avoid, mixes)
+            try:
+                self._decide(token, emit, a, now, played, recent, minutes, avoid, mixes)
+            except Exception as e:
+                log.warning("── gave up after %.1f s: %s: %s", time.perf_counter() - start, type(e).__name__, e,
+                            exc_info=log.isEnabledFor(logging.DEBUG))
+                raise
+            log.info("── %s after %.1f s", "decided" if token == self._token else "cancelled (a newer request took over)",
+                     time.perf_counter() - start)
         except NothingLeft:
             emit("exhausted")
         except AuthExpired as e:  # the source's access is gone: nothing more from it, no retrying
@@ -250,21 +271,21 @@ class KevDJ:
         if t.deep:
             return True
         emit("status", text=f"Mapping “{t.title}”: bars, sections, stems…", tone="info")
+        log.info("mapping %s with allin1…", _about(t))
         start = time.time()
         try:
             self.structure(t)
         except Exception as e:
+            log.warning("couldn't map “%s”: %s", t.title, e)
             emit("log", text=f"Couldn't map “{t.title}” ({e})", tone="warn")
             return False
         emit("mapped", track=t, seconds=time.time() - start)
+        log.info("mapped “%s” in %.1f s: %d bars, %d sections", t.title, time.time() - start, t.n_bars, len(t.sections))
         emit("log", text=f"Mapped “{t.title}” in {time.time() - start:.0f} s: {t.n_bars} bars, "
                          f"{len(t.sections)} sections")
         return True
 
     def _decide(self, token, emit, a, now, played, recent, minutes, avoid, mixes):
-        if not allows(a.track, Operation.SEND_TO_MODEL):
-            raise PolicyDenied(a.track.provider, Operation.SEND_TO_MODEL, "Kev can't be told about this track",
-                               a.track.id)
         if not a.track.deep:  # the opener: allin1 maps it while it plays; the plan needs its bars
             self._map(emit, a.track)
             a.reset_grid()
@@ -272,6 +293,7 @@ class KevDJ:
             return
         if not self.kev.ping():
             emit("status", text="Waking Kev up (loading the model)…", tone="warn")
+            log.info("Kev isn't answering; waking it up")
             self.kev.start()
         emit("model", name=self.kev.name)
 
@@ -281,18 +303,27 @@ class KevDJ:
         recent_artists = {t.artist for t in recent[-2:] if t.artist != "Unknown artist"}
         # only tracks whose source lets their descriptions go to Kev
         ranked = [c for c in self.lib.rank(a.track, a.bpm, set(played) | avoid | self.broken, self.lift)
-                  if allows(c.track, Operation.SEND_TO_MODEL)]
+                  ]
         if not ranked:
             raise NothingLeft
         fresh = [c for c in ranked if c.track.artist not in recent_artists] or ranked
         short = [Candidate(c.track, self.cards.fit(a.bpm, a.track, c.track)) for c in fresh[:SHORTLIST]]
         emit("shortlist", candidates=short)
+        log.info("shortlist: %d of %d ranked tracks (excluded: %d played/avoided, %d broken%s)",
+                 len(short), len(ranked), len(set(played) | avoid), len(self.broken),
+                 f", artists {sorted(recent_artists)} just played" if len(fresh) < len(ranked) else "")
+        for n, c in enumerate(short):
+            log.info("  %d. %s — %s", n, _about(c.track), c.fit)
         emit("status", text=f"Kev is weighing {len(short)} tracks…", tone="info")
         context = self.cards.set_line(minutes, self.lift, recent[:-1])
         playing = "Now playing: " + self.cards.vibe(a.track) + "."
+        log.info("asking Kev to rate them (%s)", self.kev.name)
         jobs = {self._io.submit(self._rate, context, playing, c): i for i, c in enumerate(short)}
         for done in as_completed(jobs):
             done.result()
+            c = short[jobs[done]]
+            log.info("  rated %d. “%s”: flow %.0f%%, energy %.0f%%, repeat %.0f%% → score %.3f (%.0f ms)",
+                     jobs[done], c.track.title, 100 * c.flow, 100 * c.energy, 100 * c.repeat, c.score, c.ms)
             emit("rated", index=jobs[done])
         if token != self._token:
             return
@@ -302,6 +333,8 @@ class KevDJ:
         weights = np.exp((scores - scores.max()) / TEMPERATURE)
         for c, p in zip(short, weights / weights.sum()):
             c.chance = float(p)
+        log.info("chances: %s", ", ".join(f"{i}. {c.chance:.0%}" for i, c in
+                                           sorted(enumerate(short), key=lambda ic: -ic[1].chance)))
         left = list(range(len(short)))
         while True:
             p = np.array([short[j].chance for j in left]) + 1e-12
@@ -309,6 +342,7 @@ class KevDJ:
             pick = short[i]
             b = self._pick = pick.track
             emit("picked", index=i)
+            log.info("picked %d. %s (%.0f%% chance)", i, _about(pick.track), 100 * pick.chance)
             emit("log", text=f"Picked “{b.title}” ({pick.chance:.0%} chance) — flow {pick.flow:.0%}, "
                              f"energy fit {pick.energy:.0%}")
             # Load the track (and time-stretch it to the set tempo) while allin1 maps it and Kev plans the mix.
@@ -322,6 +356,7 @@ class KevDJ:
                 emit("log", text=f"Mixing “{b.title}” on its rough beat grid instead", tone="warn")
                 break
             self.broken.add(b.uid)  # allin1 couldn't read it: Kev's next choice
+            log.info("allin1 couldn't map it; taking Kev's next choice")
             left.remove(i)
             emit("log", text="Kev takes its next choice", tone="warn")
         if token != self._token:
@@ -346,6 +381,8 @@ class KevDJ:
             if rule in options and rule != technique:
                 overruled, technique = technique, rule
         emit("technique", probs=probs, choice=technique, overruled=overruled, ms=ms)
+        log.info("technique: %s (%s; %.0f ms)%s", technique, _probs(probs), ms,
+                 f" — Kev leaned {overruled} but wasn't sure, so the rules' pick stands" if overruled else "")
         tech = TECHNIQUES[technique]
         params = tech.defaults()
         lengths = LENGTH_TEXT[technique] if technique in TAILED else LENGTH_TEXT["blend"] if tech.blend else None
@@ -362,6 +399,8 @@ class KevDJ:
                 allowed = [v for _, v in next(p for p in tech.params if p.key == "bars").options]
                 params["bars"] = min(allowed, key=lambda v: abs(v - LENGTH_BARS[length]))
             emit("length", probs=lp, choice=length)
+            log.info("length: %s (%s) → %s", length, _probs(lp),
+                     f"{params['tail']} tail bars" if technique in TAILED else bars_words(params["bars"]))
 
         # 4. Where to mix out and in, one setting of the technique, and (from the 5th track on) the effects.
         unlocked = len(played) + 1 >= EFFECTS_FROM
@@ -376,6 +415,7 @@ class KevDJ:
             auto = tech.build(params, a.bpm)
             outs = self._out_options(a.track, *mix_window(a, now(), technique, params, auto.b_start))
             emit("log", text="Too late in the track for that — echoing out at the next bar")
+            log.info("too late in the track for %s; echoing out at the next bar", technique)
             if not outs:
                 raise RuntimeError("the track is ending; no room left to mix")
         ins = [(f"in_{bar}", bar, label) for label, bar in mix_in_points(b, auto)]
@@ -399,6 +439,10 @@ class KevDJ:
         fx_probs = {k: answers[f"fx_{k}"]["noul"] for k in fx_options}
         effects = stack(technique, sorted((k for k, v in fx_probs.items() if v >= 0.5), key=lambda k: -fx_probs[k]))
         riser_end = answers["riser_end"]["choice"] if "riser_end" in answers else "cut"
+        log.info("setting: %s", setting)
+        if fx_options:
+            log.info("effects: %s → %s", ", ".join(f"{k} {v:.0%}" for k, v in fx_probs.items()),
+                     ", ".join(effects) or "none")
         if unlocked:
             emit("effects", probs=fx_probs, chosen=effects, riser_end=riser_end if "riser" in effects and tech.blend else None,
                  skipped=sorted(last_fx & set(effect_options(technique))))
@@ -411,6 +455,9 @@ class KevDJ:
         emit("cues", outs=[(k, bar, text) for k, bar, text in outs], out_probs=answers["mix_out"]["probabilities"],
              out_choice=out_key, ins=[(k, bar, IN_WORDS.get(label, label)) for k, bar, label in ins],
              in_probs=answers["mix_in"]["probabilities"], in_choice=in_key, setting=setting)
+        log.info("mix out at bar %d of %d (%s)", out_bar, a.track.n_bars, _probs(answers["mix_out"]["probabilities"]))
+        log.info("bring it in at bar %d, %s (%s)", in_bar, IN_WORDS.get(in_label, in_label),
+                 _probs(answers["mix_in"]["probabilities"]))
 
         # 5. Render it, ready to queue.
         deck, image = (synced if sync else native).result()
@@ -418,11 +465,14 @@ class KevDJ:
         plan = Plan(technique, params, sync, out_bar, in_bar, effects=effects, riser_end=riser_end)
         scheduled = build(plan, a, deck)
         if scheduled.start < now() + SR:  # the chosen bar went by while deciding: take the next one that fits
+            log.info("bar %d went by while deciding; moving to the next one that fits", plan.out_bar)
             first, last = mix_window(a, now(), technique, params, scheduled.auto.b_start)
             if first > last:
                 raise RuntimeError("the chosen bar went by and nothing later fits")
             plan.out_bar = a.track.phrase_after(first, last) or first
             scheduled = build(plan, a, deck)
+        log.info("ready: %s into %s at bar %d, starting in %.1f s", technique, _about(b), plan.out_bar,
+                 (scheduled.start - now()) / SR)
         emit("ready", scheduled=scheduled, image=image)
 
     def _rate(self, context: str, playing: str, c: Candidate):

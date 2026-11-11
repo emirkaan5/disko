@@ -2,6 +2,8 @@
 
 The app starts the server itself if none answers, and stops it again on exit.
 """
+import json
+import logging
 import os
 import shutil
 import signal
@@ -16,6 +18,7 @@ KEV_DIR = Path(__file__).resolve().parent.parent / "external" / "kev"
 LOG = Path(__file__).resolve().parent.parent / "results" / "kev_server.log"
 URL = os.environ.get("KEV_URL", "http://127.0.0.1:8009")
 RUN = os.environ.get("KEV_RUN", "jaredpalmer/kev-4b")
+log = logging.getLogger("disko.model")  # every request and answer, at DEBUG (bin/disko -vv)
 
 
 class Kev:
@@ -44,6 +47,7 @@ class Kev:
         """Make sure a server is up, starting Kev-4B locally if needed (loads in ~30-60 s)."""
         if self.ping():
             return True
+        log.info("no Kev server at %s; starting %s (log: %s)", self.url, RUN, LOG)
         if self.proc is None:
             uv = shutil.which("uv") or str(Path.home() / ".local" / "bin" / "uv")
             LOG.parent.mkdir(exist_ok=True)
@@ -55,6 +59,7 @@ class Kev:
         deadline = time.time() + 300
         while time.time() < deadline:
             if self.ping():
+                log.info("Kev is up: %s", self.name)
                 return True
             if self.proc.poll() is not None:
                 raise RuntimeError(f"Kev's server exited; see {LOG}")
@@ -68,9 +73,15 @@ class Kev:
         self.proc = None
 
     def ask(self, state: str, questions: dict) -> dict:
+        start = time.perf_counter()
         r = self.http.post("/v1/systemone", json={"model": "kev-latest", "state": state, "questions": questions})
         r.raise_for_status()
-        return r.json()
+        reply = r.json()
+        if log.isEnabledFor(logging.DEBUG):
+            log.debug("ask (%.0f ms)\n  state:\n%s\n  questions:\n%s\n  answers:\n%s",
+                      (time.perf_counter() - start) * 1000, _indent(state), _indent(_dump(questions)),
+                      _indent(_dump(reply.get("answers"))))
+        return reply
 
     def choose(self, state: str, qid: str, question: dict, orders: int = 4) -> tuple:
         """A choice asked under several option orders and averaged, since Kev leans on order.
@@ -81,4 +92,16 @@ class Kev:
         r.raise_for_status()
         runs = r.json()["runs"]
         probs = {k: sum(run["probabilities"][k] for run in runs) / len(runs) for k in question["criteria"]}
+        if log.isEnabledFor(logging.DEBUG):
+            log.debug("choose %s over %d orders\n  state:\n%s\n  question:\n%s\n  per order:\n%s",
+                      qid, orders, _indent(state), _indent(_dump(question)),
+                      _indent("\n".join(_dump(run["probabilities"]) for run in runs)))
         return probs, sum(run["latency_ms"] for run in runs)
+
+
+def _dump(obj) -> str:
+    return json.dumps(obj, ensure_ascii=False, indent=1, default=str)
+
+
+def _indent(text: str) -> str:
+    return "\n".join("    " + line for line in str(text).splitlines())
