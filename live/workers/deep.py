@@ -15,8 +15,9 @@ the app. Runs in the audio venv:
 
 Two backends give the same files. On an Apple Silicon Mac it is all-in-one-mlx on Apple's MLX; anywhere
 else it is upstream allin1 on PyTorch (CUDA when there is a GPU, else the CPU, much slower), with
-live/workers/natten_torch standing in for the NATTEN build allin1 would otherwise need.
-DISKO_DEEP_BACKEND=mlx|torch overrides the choice.
+live/workers/natten_torch standing in for the NATTEN build allin1 would otherwise need. Its first
+line says which it got ({"event": "ready", "device": "mlx" | "cuda" | "cpu"}), so the app knows how
+long a track may take.
 """
 import json
 import os
@@ -38,25 +39,23 @@ NATTEN_TORCH = Path(__file__).resolve().parent / "natten_torch"
 
 
 def backend() -> str:
-    chosen = os.environ.get("DISKO_DEEP_BACKEND")
-    if chosen in ("mlx", "torch"):
-        return chosen
+    # by platform only: requirements/audio.txt installs each stack on its own platform
     return "mlx" if sys.platform == "darwin" and platform.machine() == "arm64" else "torch"
 
 
 def load(name: str):
-    """(allin1 module, extra analyze() arguments, what to run after each track) for the backend."""
+    """(allin1 module, extra analyze() arguments, what to run after each track, device) for the backend."""
     if name == "mlx":
         import allin1_mlx
         import mlx.core as mx
         mx.set_cache_limit(MLX_CACHE_GB << 30)
-        return allin1_mlx, {}, mx.clear_cache
+        return allin1_mlx, {}, mx.clear_cache, "mlx"
     sys.path.insert(0, str(NATTEN_TORCH))  # before any installed NATTEN, whose API allin1 can't use
     import allin1
     import torch
     device = "cuda" if torch.cuda.is_available() else "cpu"
     after = torch.cuda.empty_cache if device == "cuda" else (lambda: None)
-    return allin1, {"device": device, "multiprocess": False}, after
+    return allin1, {"device": device, "multiprocess": False}, after, device
 
 
 def bar_levels(stem_dir: Path, downbeats: list, duration: float) -> dict:
@@ -119,8 +118,8 @@ def main():
         except BrokenPipeError:  # the app is gone
             os._exit(0)
 
-    allin1, options, after_each = load(backend())
-    say(event="ready")
+    allin1, options, after_each, device = load(backend())
+    say(event="ready", device=device)
     for line in sys.stdin:
         if not line.strip():
             continue

@@ -448,6 +448,15 @@ class FullPass:
             self.log = None
 
 
+def hang_timeout(device: str | None, duration: float = 0.0) -> float:
+    """Seconds the deep helper may spend on one track before it counts as hung. On a GPU (mlx, cuda)
+    a track takes well under a minute; on the CPU about as long as the track plays, so allow a few
+    times that (30 min when the length isn't known)."""
+    if device != "cpu":
+        return 240.0
+    return max(600.0, 4 * duration) if duration else 1800.0
+
+
 class DeepAnalyzer:
     """allin1 on one track at a time, in a helper that stays up (its imports take a few seconds).
 
@@ -458,8 +467,6 @@ class DeepAnalyzer:
     structure is filled in and tracks.csv updated; asking again for a track in progress returns
     the same Future. Every step also goes out on `events` as (kind, track, info), kind being
     analyzing, analyzed or failed."""
-
-    TIMEOUT = 240  # seconds before an analysis that hangs is given up (and the helper restarted)
 
     def __init__(self, store, temp: SessionTemp | None = None):
         self.store, self.temp = store, temp
@@ -472,7 +479,7 @@ class DeepAnalyzer:
         self._keys = {}     # the id the helper knows it by -> uid
         self._audio = {}    # uid -> TempAudio, for a track decoded into the session temp folder
         self._owner = {}    # uid -> the helper process it was sent to
-        self._started = {}  # uid -> time.time() when the helper took it on
+        self._deadline = {}  # uid -> time.time() by which the helper must be done with it (hang_timeout)
         self._closed = False
         threading.Thread(target=self._watch, daemon=True, name="deep-watchdog").start()
 
@@ -558,7 +565,7 @@ class DeepAnalyzer:
         with self._lock:
             future, track = self._futures.pop(uid, None), self._tracks.pop(uid, None)
             audio = self._audio.pop(uid, None)
-            self._started.pop(uid, None)
+            self._deadline.pop(uid, None)
             self._owner.pop(uid, None)
             for key in [k for k, u in self._keys.items() if u == uid]:
                 del self._keys[key]
@@ -576,14 +583,17 @@ class DeepAnalyzer:
             self.events.put(("failed", track, {"error": error}))
 
     def _read(self, proc: subprocess.Popen):
+        device = None  # this helper's, from its ready line (always before any started)
         for line in proc.stdout:
             try:
                 msg = json.loads(line)
             except ValueError:
                 continue
             uid = self._keys.get(msg.get("id"))
-            if msg.get("event") == "started" and uid in self._tracks:
-                self._started[uid] = time.time()
+            if msg.get("event") == "ready":
+                device = msg.get("device")
+            elif msg.get("event") == "started" and uid in self._tracks:
+                self._deadline[uid] = time.time() + hang_timeout(device, self._tracks[uid].duration)
                 self.events.put(("analyzing", self._tracks[uid], {}))
             elif msg.get("event") == "done" and uid is not None:
                 self._finish(uid, seconds=msg.get("seconds"))
@@ -599,7 +609,7 @@ class DeepAnalyzer:
     def _watch(self):
         while not self._closed:
             time.sleep(5)
-            stuck = [uid for uid, t in list(self._started.items()) if time.time() - t > self.TIMEOUT]
+            stuck = [uid for uid, t in list(self._deadline.items()) if time.time() > t]
             if stuck:
                 _stop(self.proc)  # the reader then fails everything that was waiting
 

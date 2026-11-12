@@ -21,6 +21,7 @@ from unittest import mock
 
 from live.sources import (AuthExpired, Availability, Operation, Policy, PolicyDenied, SourceTimeout, TrackId,
                           TrackUnavailable)
+from live.host import SECRET_STORE
 from live.sources import beatport
 from live.sources.beatport import __main__ as cli
 from live.sources.beatport import auth, source as bp_source
@@ -167,7 +168,7 @@ class DotEnv(unittest.TestCase):
         self.assertEqual((creds.client_id, creds.client_secret, creds.origin), ("from-env", None, ".env / environment"))
         creds = auth.Credentials.load(store, env={"DISKO_BEATPORT_CLIENT_ID": " ", "OTHER": "x"})
         self.assertEqual((creds.client_id, creds.client_secret, creds.origin),
-                         ("from-keychain", "keychain-secret", "Keychain"))
+                         ("from-keychain", "keychain-secret", SECRET_STORE))
         with self.assertRaises(auth.NotConfigured) as err:
             auth.Credentials.load(auth.MemoryStore(), env={})
         self.assertIn("DISKO_BEATPORT_CLIENT_ID", str(err.exception))

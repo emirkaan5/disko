@@ -23,6 +23,7 @@ import json
 import sys
 import webbrowser
 
+from ...host import SECRET_STORE
 from ..base import SourceError, TrackId
 from ..policy import MATRICES
 from .auth import ENV_CLIENT_ID, ENV_FILE, REDIRECT_URI
@@ -36,8 +37,8 @@ def main(argv=None) -> int:
     ap.add_argument("--api", default=API, help=f"Web API root (default {API})")
     ap.add_argument("--redirect", default=REDIRECT_URI, help=f"registered redirect URI (default {REDIRECT_URI})")
     sub = ap.add_subparsers(dest="command", required=True)
-    sub.add_parser("set-client", help="store your Spotify app's client ID in the Keychain")
-    sub.add_parser("forget-client", help="remove the client ID and sign-in from the Keychain")
+    sub.add_parser("set-client", help=f"store your Spotify app's client ID in the {SECRET_STORE}")
+    sub.add_parser("forget-client", help=f"remove the client ID and sign-in from the {SECRET_STORE}")
     login_p = sub.add_parser("login", help="sign in through the browser")
     login_p.add_argument("--no-browser", action="store_true", help="print the sign-in link instead of opening it")
     sub.add_parser("logout", help="forget the sign-in and the audio choice with it")
@@ -67,7 +68,7 @@ def main(argv=None) -> int:
                 print("Nothing saved.")
                 return 1
             store.set("client_id", value)
-            print("Saved in the Keychain (service disko.spotify). Next: python -m live.sources.spotify login")
+            print(f"Saved in the {SECRET_STORE} (service disko.spotify). Next: python -m live.sources.spotify login")
         elif args.command == "forget-client":
             for name in ("tokens", "client_id"):
                 store.delete(name)

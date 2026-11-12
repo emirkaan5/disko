@@ -9,7 +9,7 @@ from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout
 
 from .. import models
-from ..host import MAC, THIS_MACHINE
+from ..host import MAC, SECRET_STORE, THIS_MACHINE
 from . import theme as T
 from .widgets import label
 
@@ -140,7 +140,7 @@ class ModelPage(QFrame):
         # Jev
         self.jev = Option("jev", "Jev · TypeSafe, hosted", JEV_TEXT)
         self.jev.lay.addWidget(_wrap(f"Get a key at <a style='color:{T.VIOLET}' href='{models.JEV_KEYS}'>"
-                                     f"console.typesafe.ai</a>. It is kept in your Keychain.", rich=True))
+                                     f"console.typesafe.ai</a>. It is kept in your {SECRET_STORE}.", rich=True))
         row = QHBoxLayout()
         self.jev_key = _field("API key", secret=True)
         self.jev_key.returnPressed.connect(self.use_jev)
@@ -222,7 +222,7 @@ class ModelPage(QFrame):
             if typed:
                 self.store.set_key("jev", typed)
         except Exception as e:
-            self.jev.say(f"The key couldn't be saved in the Keychain: {e}", T.BAD)
+            self.jev.say(f"The key couldn't be saved in the {SECRET_STORE}: {e}", T.BAD)
             return
         self.jev_key.clear()
         self._check(models.ModelChoice("jev"), self.jev)
@@ -235,7 +235,7 @@ class ModelPage(QFrame):
         try:
             self.store.set_key("custom", self.custom_key.text())
         except Exception as e:
-            self.custom.say(f"The key couldn't be saved in the Keychain: {e}", T.BAD)
+            self.custom.say(f"The key couldn't be saved in the {SECRET_STORE}: {e}", T.BAD)
             return
         self.custom_key.clear()
         self._check(models.ModelChoice("custom", url, self.custom_model.text().strip()), self.custom)

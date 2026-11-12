@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 say = lambda **m: print(json.dumps(m), flush=True)
-say(event="ready")
+say(event="ready", device="mlx")
 for line in sys.stdin:
     if not line.strip():
         continue

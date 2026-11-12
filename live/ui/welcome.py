@@ -14,7 +14,7 @@ from PySide6.QtGui import QColor, QFont, QFontMetrics, QLinearGradient, QPainter
 from PySide6.QtWidgets import (QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QPushButton,
                                QScrollArea, QSizePolicy, QStackedWidget, QVBoxLayout, QWidget)
 
-from ..host import THIS_MACHINE
+from ..host import SECRET_STORE, THIS_MACHINE
 from ..indexer import FastIndexer
 from ..playlist import Playlist, camelot, guess_names
 from ..sources.spotify.consent import WARNING as SPOTIFY_WARNING
@@ -570,7 +570,7 @@ class WelcomeWindow(QMainWindow):
         how = label(f"Spotify lets an app like disko in only through your own developer app. Create one at "
                     f"<a style='color:{T.VIOLET}' href='https://developer.spotify.com/dashboard'>"
                     f"developer.spotify.com/dashboard</a> (Web API), add <b>{REDIRECT_URI}</b> as its redirect URI, "
-                    f"and paste its client ID here. It is kept in your Keychain.", 9.5, color=T.MUTED)
+                    f"and paste its client ID here. It is kept in your {SECRET_STORE}.", 9.5, color=T.MUTED)
         how.setWordWrap(True)
         how.setTextFormat(Qt.TextFormat.RichText)
         how.setOpenExternalLinks(True)
@@ -850,7 +850,7 @@ class WelcomeWindow(QMainWindow):
         try:
             KeychainStore().set("client_id", value)
         except Exception as e:
-            self._spot_note(f"The client ID couldn't be saved in the Keychain: {e}")
+            self._spot_note(f"The client ID couldn't be saved in the {SECRET_STORE}: {e}")
             return
         self.spot_client_id.clear()
         self._spot_note("", warn=False)

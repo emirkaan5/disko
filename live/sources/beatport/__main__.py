@@ -21,6 +21,7 @@ import json
 import sys
 import webbrowser
 
+from ...host import SECRET_STORE
 from ..base import SourceError, TrackId
 from ..pool import candidate_pool
 from ..policy import MATRICES
@@ -36,8 +37,8 @@ def main(argv=None) -> int:
                     help="registered redirect URI; by default a loopback callback for disko's own client ID, "
                          "or the docs client's own post-message page when the client ID is borrowed")
     sub = ap.add_subparsers(dest="command", required=True)
-    sub.add_parser("set-client", help="store disko's client ID (and secret) in the Keychain")
-    sub.add_parser("forget-client", help="remove the client ID, secret and tokens from the Keychain")
+    sub.add_parser("set-client", help=f"store disko's client ID (and secret) in the {SECRET_STORE}")
+    sub.add_parser("forget-client", help=f"remove the client ID, secret and tokens from the {SECRET_STORE}")
     login_p = sub.add_parser("login", help="sign in through the browser")
     login_p.add_argument("--no-browser", action="store_true", help="print the sign-in link instead of opening it")
     login_p.add_argument("--manual", action="store_true",
@@ -61,13 +62,13 @@ def main(argv=None) -> int:
             secret = getpass.getpass("Client secret, if Beatport gave one (hidden, Enter for none): ").strip()
             Credentials(client_id, secret or None).save(
                 store, allow_borrowed=_truthy(env_values().get(ENV_ALLOW_BORROWED)))
-            print("Saved in the Keychain (service disko.beatport). Next: python -m live.sources.beatport login")
+            print(f"Saved in the {SECRET_STORE} (service disko.beatport). Next: python -m live.sources.beatport login")
             if env_values().get(ENV_CLIENT_ID):
                 print(f"Note: {ENV_CLIENT_ID} is set in {ENV_FILE} or the environment, and that one is used instead.")
         elif args.command == "forget-client":
             for name in ("tokens", "client_secret", "client_id"):
                 store.delete(name)
-            print("Removed disko's Beatport client ID, secret and sign-in from the Keychain.")
+            print(f"Removed disko's Beatport client ID, secret and sign-in from the {SECRET_STORE}.")
         elif args.command == "login":
             manual = args.manual or None  # None lets the OAuth flow pick: manual for a non-loopback redirect
 

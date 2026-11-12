@@ -78,9 +78,16 @@ elif [ "$OS" = Linux ] && [ "$(uname -m)" = x86_64 ]; then
     elif command -v dnf >/dev/null 2>&1; then PKG="sudo dnf install -y"
     elif command -v pacman >/dev/null 2>&1; then PKG="sudo pacman -S"
     else PKG="your package manager: install"; fi
+    . "$REPO/scripts/linux_checks.sh"
+    glibc=$(glibc_version)
+    if [ -z "$glibc" ] || ! version_ge "$glibc" "$GLIBC_MIN"; then
+        say "glibc ${glibc:-not found}: the app's PySide6 needs glibc $GLIBC_MIN or newer (Ubuntu 22.04+,"
+        say "Debian 12+, Fedora 35+), so its environment can't install on this system."
+        [ "$DRY" = 1 ] || exit 1
+    fi
     # What the venvs can't bring themselves.
     missing=""
-    { (ldconfig -p 2>/dev/null || true) | grep -q libportaudio.so; } || missing="$missing portaudio"
+    has_portaudio || missing="$missing portaudio"
     command -v cc >/dev/null 2>&1 || missing="$missing compiler"
     command -v git >/dev/null 2>&1 || missing="$missing git"
     if [ -n "$missing" ]; then

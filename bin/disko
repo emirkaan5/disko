@@ -79,7 +79,15 @@ doctor() {
             && gpu="NVIDIA GPU: $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -n 1)"
         line "$OK" "Linux $(uname -m); deep pass and Kev on PyTorch ($gpu)"
         deep_mods="allin1 torch madmom essentia soundfile numpy"
-        if (ldconfig -p 2>/dev/null || true) | grep -q libportaudio.so; then
+        . "$REPO/scripts/linux_checks.sh"
+        glibc=$(glibc_version)
+        if [ -n "$glibc" ] && version_ge "$glibc" "$GLIBC_MIN"; then
+            line "$OK" "glibc $glibc"
+        else
+            line "$NO" "glibc ${glibc:-not found}: the app's PySide6 needs glibc $GLIBC_MIN or newer (Ubuntu 22.04+, Debian 12+, Fedora 35+)"
+            blocking=1
+        fi
+        if has_portaudio; then
             line "$OK" "PortAudio (sound output)"
         else
             line "$NO" "PortAudio: libportaudio not found, so nothing can play (Debian/Ubuntu: sudo apt-get install libportaudio2)"

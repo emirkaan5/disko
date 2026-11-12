@@ -42,6 +42,7 @@ from dataclasses import asdict, dataclass, field
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
+from ...host import SECRET_STORE
 from ..base import AuthExpired, SourceError, SourceTimeout
 from ..secrets import KeychainStore as _KeychainStore, MemoryStore, parse_env, pkce, truthy
 
@@ -137,7 +138,7 @@ BORROWED_HINT = (f"that is the v4 docs page's own client ID, not one Beatport is
 class Credentials:
     client_id: str
     client_secret: str | None = None
-    origin: str = field(default="Keychain", compare=False)   # where they were read from
+    origin: str = field(default=SECRET_STORE, compare=False)   # where they were read from
 
     def __repr__(self):  # never print the secret
         return f"Credentials(client_id={self.client_id[:4]}…, secret={'set' if self.client_secret else 'none'})"
@@ -156,7 +157,7 @@ class Credentials:
             secret, origin = (env.get(ENV_CLIENT_SECRET) or "").strip() or None, ".env / environment"
         else:
             client_id = (store.get("client_id") or "").strip()
-            secret, origin = (store.get("client_secret") or "").strip() or None, "Keychain"
+            secret, origin = (store.get("client_secret") or "").strip() or None, SECRET_STORE
         if not client_id:
             raise NotConfigured(f"no Beatport client ID: put {ENV_CLIENT_ID}=... in {ENV_FILE} (see .env.example) "
                                 f"or run `python -m live.sources.beatport set-client`")
